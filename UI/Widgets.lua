@@ -2,19 +2,90 @@ local _, LV = ...
 
 LV.Widgets = {}
 
+local WHITE_TEXTURE = "Interface\\Buttons\\WHITE8x8"
+
 local colors = {
-    bg = { 0.06, 0.08, 0.12, 0.99 },
-    panel = { 0.08, 0.11, 0.17, 0.98 },
-    header = { 0.11, 0.16, 0.25, 0.98 },
-    border = { 0.22, 0.32, 0.45, 1 },
-    active = { 0.05, 0.42, 0.82, 1 },
-    yellow = { 1.0, 0.84, 0.0, 1 },
-    white = { 0.95, 0.95, 0.95, 1 },
-    muted = { 0.58, 0.62, 0.68, 1 },
-    danger = { 0.45, 0.08, 0.1, 1 },
+    transparent = { 0.000, 0.000, 0.000, 0.00 },
+    overlay = { 0.000, 0.000, 0.000, 0.58 },
+    canvas = { 0.035, 0.064, 0.084, 0.99 },
+    canvasAlt = { 0.047, 0.086, 0.112, 0.99 },
+    control = { 0.018, 0.038, 0.054, 1.00 },
+    surface = { 0.064, 0.116, 0.150, 0.98 },
+    surfaceRaised = { 0.082, 0.150, 0.190, 0.99 },
+    surfaceHover = { 0.070, 0.190, 0.245, 1.00 },
+    surfacePressed = { 0.035, 0.230, 0.340, 1.00 },
+    accentSoft = { 0.025, 0.210, 0.315, 0.96 },
+    accent = { 0.035, 0.610, 0.875, 1.00 },
+    accentBright = { 0.210, 0.790, 1.000, 1.00 },
+    border = { 0.140, 0.240, 0.300, 1.00 },
+    borderStrong = { 0.120, 0.360, 0.460, 1.00 },
+    borderFocus = { 0.075, 0.610, 0.830, 1.00 },
+    text = { 0.925, 0.955, 0.975, 1.00 },
+    textSecondary = { 0.725, 0.790, 0.835, 1.00 },
+    textMuted = { 0.500, 0.590, 0.660, 1.00 },
+    navigation = { 0.340, 0.860, 0.560, 1.00 },
+    success = { 0.025, 0.360, 0.310, 1.00 },
+    successBorder = { 0.070, 0.760, 0.640, 1.00 },
+    danger = { 0.310, 0.055, 0.070, 0.92 },
+    dangerBorder = { 0.760, 0.180, 0.200, 1.00 },
 }
 
+-- Compatibility aliases used by the existing renderers.
+colors.bg = colors.canvas
+colors.panel = colors.canvasAlt
+colors.header = colors.surfaceRaised
+colors.active = colors.accentSoft
+colors.yellow = colors.navigation
+colors.white = colors.text
+colors.muted = colors.textMuted
+
 LV.Widgets.colors = colors
+
+local backdrop = {
+    bgFile = WHITE_TEXTURE,
+    edgeFile = WHITE_TEXTURE,
+    edgeSize = 1,
+}
+
+local buttonStyles = {
+    secondary = {
+        normal = { colors.surfaceRaised, colors.border, colors.textSecondary },
+        hover = { colors.surfaceHover, colors.borderFocus, colors.text },
+        pressed = { colors.surfacePressed, colors.borderFocus, colors.text },
+    },
+    primary = {
+        normal = { colors.accentSoft, colors.accent, colors.text },
+        hover = { colors.surfacePressed, colors.accentBright, colors.text },
+        pressed = { colors.surfaceHover, colors.accentBright, colors.text },
+    },
+    success = {
+        normal = { colors.success, colors.successBorder, colors.text },
+        hover = { colors.success, colors.text, colors.text },
+        pressed = { colors.surfaceHover, colors.successBorder, colors.text },
+    },
+    danger = {
+        normal = { colors.danger, colors.dangerBorder, colors.text },
+        hover = { colors.danger, colors.text, colors.text },
+        pressed = { colors.surfaceHover, colors.dangerBorder, colors.text },
+    },
+    ghost = {
+        normal = { colors.transparent, colors.transparent, colors.textMuted },
+        hover = { colors.surfaceHover, colors.borderStrong, colors.text },
+        pressed = { colors.surfacePressed, colors.borderFocus, colors.text },
+    },
+    navigation = {
+        normal = { colors.transparent, colors.transparent, colors.textMuted },
+        hover = { colors.surface, colors.transparent, colors.text },
+        pressed = { colors.surfaceHover, colors.transparent, colors.text },
+        active = { colors.surface, colors.border, colors.text },
+    },
+    tab = {
+        normal = { colors.transparent, colors.transparent, colors.textMuted },
+        hover = { colors.surface, colors.transparent, colors.text },
+        pressed = { colors.surfaceHover, colors.transparent, colors.text },
+        active = { colors.transparent, colors.transparent, colors.accentBright },
+    },
+}
 
 local function track(parent, region)
     if parent and parent._lvTrackDirect and LV.UI and LV.UI.Track then
@@ -23,22 +94,35 @@ local function track(parent, region)
     return region
 end
 
-local backdrop = {
-    bgFile = "Interface\\Buttons\\WHITE8x8",
-    edgeFile = "Interface\\Buttons\\WHITE8x8",
-    edgeSize = 1,
-}
+local function hideTextureRegions(frame)
+    if not frame or not frame.GetRegions then
+        return
+    end
+    for _, region in ipairs({ frame:GetRegions() }) do
+        if region and region.GetObjectType and region:GetObjectType() == "Texture" then
+            region:SetAlpha(0)
+        end
+    end
+end
 
 function LV.Widgets:ApplyBackdrop(frame, color, borderColor)
     frame:SetBackdrop(backdrop)
-    frame:SetBackdropColor(unpack(color or colors.panel))
+    frame:SetBackdropColor(unpack(color or colors.surface))
     frame:SetBackdropBorderColor(unpack(borderColor or colors.border))
+end
+
+function LV.Widgets:Line(parent, height, color)
+    local line = parent:CreateTexture(nil, "ARTWORK")
+    line:SetTexture(WHITE_TEXTURE)
+    line:SetHeight(height or 1)
+    line:SetVertexColor(unpack(color or colors.border))
+    return line
 end
 
 function LV.Widgets:Label(parent, text, size)
     local font = parent:CreateFontString(nil, "OVERLAY", size == "large" and "GameFontNormalLarge" or "GameFontNormal")
     font:SetText(text or "")
-    font:SetTextColor(unpack(colors.yellow))
+    font:SetTextColor(unpack(colors.textSecondary))
     font:SetJustifyH("LEFT")
     return track(parent, font)
 end
@@ -46,19 +130,41 @@ end
 function LV.Widgets:Text(parent, text, size)
     local font = parent:CreateFontString(nil, "OVERLAY", size == "large" and "GameFontHighlightLarge" or "GameFontHighlight")
     font:SetText(text or "")
-    font:SetTextColor(unpack(colors.white))
+    font:SetTextColor(unpack(colors.text))
     font:SetJustifyH("LEFT")
     return track(parent, font)
 end
 
-function LV.Widgets:Button(parent, text, width, height, onClick)
+function LV.Widgets:ApplyButtonState(button, state)
+    local style = buttonStyles[button._lvStyle or "secondary"] or buttonStyles.secondary
+    local definition = (button._lvActive and style.active) or style[state or "normal"] or style.normal
+    self:ApplyBackdrop(button, definition[1], definition[2])
+    if button.text then
+        button.text:SetTextColor(unpack(definition[3]))
+    end
+    if button._lvNavigationLine then
+        button._lvNavigationLine:SetShown(button._lvActive == true)
+    end
+    if button._lvTabLine then
+        button._lvTabLine:SetShown(button._lvActive == true)
+    end
+    if button.icon then
+        local tint = button._lvActive and colors.navigation
+            or ((state == "hover" or state == "pressed") and colors.text or colors.textSecondary)
+        button.icon:SetVertexColor(unpack(tint))
+    end
+end
+
+function LV.Widgets:Button(parent, text, width, height, onClick, style)
     local button = CreateFrame("Button", nil, parent, "BackdropTemplate")
     button:SetSize(width or 120, height or 28)
-    self:ApplyBackdrop(button, colors.header, colors.border)
+    button._lvStyle = style or "secondary"
     button.text = self:Text(button, text or "")
+    button.Text = button.text
     button.text:SetPoint("CENTER")
+    self:ApplyButtonState(button, "normal")
     button:SetScript("OnEnter", function()
-        button:SetBackdropColor(unpack(colors.active))
+        LV.Widgets:ApplyButtonState(button, "hover")
         if button.tooltip then
             GameTooltip:SetOwner(button, "ANCHOR_RIGHT")
             GameTooltip:SetText(button.tooltip)
@@ -66,10 +172,16 @@ function LV.Widgets:Button(parent, text, width, height, onClick)
         end
     end)
     button:SetScript("OnLeave", function()
-        button:SetBackdropColor(unpack(button._active and colors.active or colors.header))
+        LV.Widgets:ApplyButtonState(button, "normal")
         if button.tooltip then
             GameTooltip:Hide()
         end
+    end)
+    button:SetScript("OnMouseDown", function()
+        LV.Widgets:ApplyButtonState(button, "pressed")
+    end)
+    button:SetScript("OnMouseUp", function()
+        LV.Widgets:ApplyButtonState(button, button:IsMouseOver() and "hover" or "normal")
     end)
     button:SetScript("OnClick", function()
         if onClick then
@@ -79,9 +191,48 @@ function LV.Widgets:Button(parent, text, width, height, onClick)
     return track(parent, button)
 end
 
+function LV.Widgets:SetButtonStyle(button, style)
+    if button then
+        button._lvStyle = style or "secondary"
+        self:ApplyButtonState(button, "normal")
+    end
+end
+
 function LV.Widgets:SetButtonActive(button, active)
-    button._active = active and true or false
-    button:SetBackdropColor(unpack(active and colors.active or colors.header))
+    if button then
+        button._lvActive = active and true or false
+        self:ApplyButtonState(button, "normal")
+    end
+end
+
+function LV.Widgets:NavigationButton(parent, text, iconTexture, width, height, onClick)
+    local button = self:Button(parent, text, width, height, onClick, "navigation")
+    button.text:ClearAllPoints()
+    button.text:SetPoint("LEFT", 46, 0)
+    button.text:SetJustifyH("LEFT")
+    button.icon = button:CreateTexture(nil, "ARTWORK")
+    button.icon:SetSize(18, 18)
+    button.icon:SetPoint("LEFT", 18, 0)
+    button.icon:SetTexture(iconTexture)
+    button.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+    button.icon:SetDesaturated(true)
+    button._lvNavigationLine = self:Line(button, 1, colors.navigation)
+    button._lvNavigationLine:ClearAllPoints()
+    button._lvNavigationLine:SetPoint("TOPLEFT", 4, -5)
+    button._lvNavigationLine:SetPoint("BOTTOMLEFT", 4, 5)
+    button._lvNavigationLine:SetWidth(3)
+    button._lvNavigationLine:Hide()
+    self:ApplyButtonState(button, "normal")
+    return button
+end
+
+function LV.Widgets:Tab(parent, text, width, height, onClick)
+    local button = self:Button(parent, text, width, height, onClick, "tab")
+    button._lvTabLine = self:Line(button, 2, colors.accentBright)
+    button._lvTabLine:SetPoint("BOTTOMLEFT")
+    button._lvTabLine:SetPoint("BOTTOMRIGHT")
+    button._lvTabLine:Hide()
+    return button
 end
 
 function LV.Widgets:SetTooltip(frame, text)
@@ -90,11 +241,94 @@ function LV.Widgets:SetTooltip(frame, text)
     end
 end
 
+local function addIconLine(icon, width, height, point, x, y, rotation)
+    local line = icon:CreateTexture(nil, "OVERLAY")
+    line:SetTexture(WHITE_TEXTURE)
+    line:SetSize(width, height)
+    line:SetPoint(point or "CENTER", icon, point or "CENTER", x or 0, y or 0)
+    if rotation and line.SetRotation then
+        line:SetRotation(rotation)
+    end
+    icon.lines[#icon.lines + 1] = line
+end
+
+local function setActionIconColor(button, color)
+    local icon = button and button._lvActionIcon
+    for _, line in ipairs(icon and icon.lines or {}) do
+        line:SetVertexColor(unpack(color))
+    end
+    if icon and icon.texture then
+        icon.texture:SetVertexColor(unpack(color))
+    end
+end
+
+function LV.Widgets:IconButton(parent, kind, width, height, onClick)
+    local style = kind == "trash" and "ghost" or "ghost"
+    local button = self:Button(parent, "", width or 24, height or 22, onClick, style)
+    local icon = CreateFrame("Frame", nil, button)
+    icon:SetSize(16, 16)
+    icon:SetPoint("CENTER")
+    icon.lines = {}
+
+    if kind == "trash" then
+        -- Matches the line-art trash icon used by PopAuras.
+        addIconLine(icon, 8, 1, "TOPLEFT", 4, -4)
+        addIconLine(icon, 4, 1, "TOPLEFT", 6, -2)
+        addIconLine(icon, 1, 8, "TOPLEFT", 5, -6)
+        addIconLine(icon, 1, 8, "TOPLEFT", 11, -6)
+        addIconLine(icon, 7, 1, "TOPLEFT", 5, -13)
+        addIconLine(icon, 1, 5, "TOPLEFT", 7, -7)
+        addIconLine(icon, 1, 5, "TOPLEFT", 9, -7)
+    elseif kind == "edit" then
+        -- A desaturated game icon stays recognizable as a quill at table-row size.
+        icon.texture = icon:CreateTexture(nil, "OVERLAY")
+        icon.texture:SetSize(18, 18)
+        icon.texture:SetPoint("CENTER")
+        icon.texture:SetTexture("Interface\\Icons\\INV_Feather_01")
+        icon.texture:SetTexCoord(0.10, 0.90, 0.10, 0.90)
+        icon.texture:SetDesaturated(true)
+    elseif kind == "exclude" then
+        local radius = 5.2
+        for segment = 0, 11 do
+            local angle = (math.pi * 2 * segment) / 12
+            addIconLine(
+                icon,
+                3,
+                1,
+                "CENTER",
+                math.cos(angle) * radius,
+                math.sin(angle) * radius,
+                angle + (math.pi / 2)
+            )
+        end
+        addIconLine(icon, 1, 14, "CENTER", 0, 0, math.rad(-45))
+    end
+
+    button._lvActionIcon = icon
+    local normalColor = colors.textSecondary
+    if kind == "trash" or kind == "exclude" then
+        normalColor = colors.dangerBorder
+    elseif kind == "edit" then
+        normalColor = colors.accentBright
+    end
+    setActionIconColor(button, normalColor)
+    button:HookScript("OnEnter", function()
+        setActionIconColor(button, colors.text)
+    end)
+    button:HookScript("OnLeave", function()
+        setActionIconColor(button, normalColor)
+    end)
+    return button
+end
+
 function LV.Widgets:EditBox(parent, width, height, onCommit)
-    local edit = CreateFrame("EditBox", nil, parent, "InputBoxTemplate")
+    local edit = CreateFrame("EditBox", nil, parent, "InputBoxTemplate,BackdropTemplate")
     edit:SetSize(width or 120, height or 28)
     edit:SetAutoFocus(false)
     edit:SetFontObject(GameFontHighlight)
+    edit:SetTextInsets(7, 7, 0, 0)
+    hideTextureRegions(edit)
+    self:ApplyBackdrop(edit, colors.control, colors.border)
     edit:SetScript("OnEnterPressed", function(self)
         self:ClearFocus()
         if onCommit then
@@ -102,37 +336,116 @@ function LV.Widgets:EditBox(parent, width, height, onCommit)
         end
     end)
     edit:SetScript("OnEditFocusLost", function(self)
+        self:SetBackdropColor(unpack(colors.control))
+        self:SetBackdropBorderColor(unpack(colors.border))
         if onCommit then
             onCommit(self:GetText())
         end
     end)
+    edit:SetScript("OnEditFocusGained", function(self)
+        self:SetBackdropColor(unpack(colors.surface))
+        self:SetBackdropBorderColor(unpack(colors.borderFocus))
+    end)
+    edit:SetScript("OnEscapePressed", function(self)
+        self:ClearFocus()
+    end)
     return track(parent, edit)
 end
 
+local function updateToggle(check)
+    local checked = check:GetChecked() and true or false
+    LV.Widgets:ApplyBackdrop(
+        check,
+        checked and colors.accentSoft or colors.surfaceRaised,
+        checked and colors.accent or colors.border
+    )
+    check.knob:ClearAllPoints()
+    check.knob:SetPoint("CENTER", check, "CENTER", checked and 10 or -10, 0)
+    check.knob:SetVertexColor(unpack(checked and colors.accentBright or colors.textSecondary))
+end
+
 function LV.Widgets:Check(parent, text, onChanged)
-    local check = CreateFrame("CheckButton", nil, parent, "ChatConfigCheckButtonTemplate")
-    check.Text:SetText(text or "")
-    check.Text:SetTextColor(unpack(colors.yellow))
+    local check = CreateFrame("CheckButton", nil, parent, "BackdropTemplate")
+    check:SetSize(42, 22)
+    check.knob = check:CreateTexture(nil, "OVERLAY")
+    check.knob:SetTexture(WHITE_TEXTURE)
+    check.knob:SetSize(14, 14)
+    check.label = self:Text(check, text or "")
+    check.label:SetPoint("LEFT", check, "RIGHT", 8, 0)
+    check.label:SetTextColor(unpack(colors.textSecondary))
+    local originalSetChecked = check.SetChecked
+    check.SetChecked = function(self, value)
+        originalSetChecked(self, value)
+        updateToggle(self)
+    end
     check:SetScript("OnClick", function(self)
+        updateToggle(self)
         if onChanged then
             onChanged(self:GetChecked() and true or false)
         end
     end)
+    check:SetScript("OnEnter", function(self)
+        local checked = self:GetChecked() and true or false
+        LV.Widgets:ApplyBackdrop(
+            self,
+            checked and colors.accentSoft or colors.surfaceHover,
+            checked and colors.accentBright or colors.borderFocus
+        )
+    end)
+    check:SetScript("OnLeave", updateToggle)
+    check:SetScript("OnShow", updateToggle)
+    updateToggle(check)
     return track(parent, check)
 end
 
 function LV.Widgets:Section(parent, title, height)
     local frame = CreateFrame("Frame", nil, parent, "BackdropTemplate")
     frame:SetHeight(height or 42)
-    self:ApplyBackdrop(frame, colors.panel, colors.border)
-    frame.header = CreateFrame("Frame", nil, frame, "BackdropTemplate")
+    self:ApplyBackdrop(frame, colors.transparent, colors.transparent)
+    frame.header = CreateFrame("Frame", nil, frame)
     frame.header:SetPoint("TOPLEFT")
     frame.header:SetPoint("TOPRIGHT")
     frame.header:SetHeight(30)
-    self:ApplyBackdrop(frame.header, colors.header, colors.border)
-    frame.title = self:Label(frame.header, title or "")
-    frame.title:SetPoint("LEFT", 12, 0)
+    frame.title = frame.header:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    frame.title:SetText(string.upper(title or ""))
+    frame.title:SetTextColor(unpack(colors.navigation))
+    frame.title:SetPoint("LEFT", 4, 0)
+    frame.title:SetJustifyH("LEFT")
+    frame.divider = self:Line(frame.header, 1, colors.border)
+    frame.divider:SetPoint("BOTTOMLEFT", 4, 0)
+    frame.divider:SetPoint("BOTTOMRIGHT", -4, 0)
     return track(parent, frame)
+end
+
+function LV.Widgets:ScrollFrame(parent)
+    local scroll = CreateFrame("ScrollFrame", nil, parent, "UIPanelScrollFrameTemplate")
+    local child = CreateFrame("Frame", nil, scroll)
+    child:SetSize(1, 1)
+    scroll:SetScrollChild(child)
+    scroll:EnableMouseWheel(true)
+    scroll:SetScript("OnMouseWheel", function(self, delta)
+        local step = IsShiftKeyDown and IsShiftKeyDown() and 150 or 45
+        local nextValue = self:GetVerticalScroll() - ((tonumber(delta) or 0) * step)
+        self:SetVerticalScroll(math.max(0, math.min(nextValue, self:GetVerticalScrollRange())))
+    end)
+    scroll:HookScript("OnSizeChanged", function(_, width)
+        child:SetWidth(math.max(1, (tonumber(width) or 1) - 28))
+    end)
+    local bar = scroll.ScrollBar
+    if bar then
+        if bar.Background then
+            bar.Background:SetTexture(WHITE_TEXTURE)
+            bar.Background:SetVertexColor(unpack(colors.canvas))
+        end
+        local thumb = bar.GetThumbTexture and bar:GetThumbTexture() or bar.ThumbTexture
+        if thumb then
+            thumb:SetTexture(WHITE_TEXTURE)
+            thumb:SetWidth(6)
+            thumb:SetVertexColor(unpack(colors.accent))
+        end
+    end
+    track(parent, scroll)
+    return scroll, child
 end
 
 function LV.Widgets:CycleButton(parent, values, getValue, setValue, width)
@@ -167,13 +480,20 @@ end
 
 function LV.Widgets:Dropdown(parent, values, getValue, setValue, width)
     local button = self:Button(parent, "", width or 120, 28)
+    button.text:ClearAllPoints()
+    button.text:SetPoint("LEFT", 10, 0)
+    button.text:SetPoint("RIGHT", -24, 0)
+    button.text:SetJustifyH("LEFT")
+    button.arrow = self:Label(button, "v")
+    button.arrow:SetPoint("RIGHT", -8, 1)
+    button.arrow:SetTextColor(unpack(colors.accentBright))
     button.menu = CreateFrame("Frame", nil, button, "BackdropTemplate")
     button.menu:SetPoint("TOPLEFT", button, "BOTTOMLEFT", 0, -2)
     button.menu:SetWidth(width or 120)
     button.menu:SetFrameStrata("TOOLTIP")
     button.menu:SetFrameLevel(button:GetFrameLevel() + 50)
     button.menu:Hide()
-    self:ApplyBackdrop(button.menu, colors.panel, colors.border)
+    self:ApplyBackdrop(button.menu, colors.canvasAlt, colors.borderStrong)
 
     local function labelFor(value)
         for _, item in ipairs(values) do
@@ -189,11 +509,12 @@ function LV.Widgets:Dropdown(parent, values, getValue, setValue, width)
     end
 
     for index, item in ipairs(values) do
+        local itemValue = item.value
         local row = self:Button(button.menu, item.label, width or 120, 24, function()
-            setValue(item.value)
+            setValue(itemValue)
             button.menu:Hide()
             refresh()
-        end)
+        end, "ghost")
         row:SetPoint("TOPLEFT", 0, -((index - 1) * 24))
         row:SetPoint("RIGHT", 0, 0)
     end

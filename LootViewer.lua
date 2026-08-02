@@ -1,7 +1,7 @@
 local addonName, LV = ...
 
 LV.name = addonName
-LV.version = "0.1.0"
+LV.version = "12.1.0"
 LV.frame = CreateFrame("Frame")
 LV.eventHandlers = {}
 LV.modules = {}
@@ -97,6 +97,8 @@ function LV:PrintHelp()
     self:Print("/lv stop - stop tracking the current raid")
     self:Print("/lv extend [hours] - reactivate and extend the most recent raid")
     self:Print("/lv bench - mark yourself benched")
+    self:Print("/lv guild_set <guild> - use stored guild data for this session")
+    self:Print("/lv guild_set clear - return to the character's actual guild")
     self:Print("/lv wipe_loot - wipe loot history for the active raid")
     self:Print("/lv rebuild_loot - rebuild active raid loot from Blizzard /loot history")
     self:Print("/lv debug_loot_window [search] - print Blizzard /loot roll fields")
@@ -107,9 +109,9 @@ SLASH_LOOTVIEWER1 = "/lv"
 SLASH_LOOTVIEWER2 = "/lootviewer"
 SlashCmdList.LOOTVIEWER = function(input)
     input = strtrim(input or "")
-    local lowered = input:lower()
-    local command, rest = lowered:match("^(%S+)%s*(.*)$")
-    command = command or ""
+    local command, rest = input:match("^(%S+)%s*(.*)$")
+    command = (command or ""):lower()
+    rest = strtrim(rest or "")
 
     if command == "help" or command == "?" then
         LV:PrintHelp()
@@ -136,8 +138,13 @@ SlashCmdList.LOOTVIEWER = function(input)
         return
     end
 
+    if command == "guild_set" then
+        LV.Guild:SetSessionOverride(rest)
+        return
+    end
+
     if command == "wipe_loot" then
-        if rest == "all" then
+        if rest:lower() == "all" then
             LV.Loot:WipeAllLoot()
         else
             LV.Loot:WipeActiveRaidLoot()

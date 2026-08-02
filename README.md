@@ -2,7 +2,7 @@
 
 LootViewer is a World of Warcraft Retail addon for guild-scoped raid attendance, loot, and trade tracking. It records compact, merge-friendly SavedVariables that can be uploaded to the companion LootViewer web application.
 
-Retail target: WoW `12.0.7` / interface `120007`.
+Retail targets: WoW `12.1.0` and `12.0.7` / interfaces `120100, 120007`.
 
 ## Features
 
@@ -11,6 +11,7 @@ Retail target: WoW `12.0.7` / interface `120007`.
 - Supports separate raid teams and schedules within one guild.
 - Stores compact, guild-scoped history across characters on the same account.
 - Provides `/lv` configuration, attendance, and history views.
+- Supports a session-only `/lv guild_set <guild>` override for viewing stored guild data from unguilded alts.
 - Synchronizes records between participating guild members through addon messages.
 
 ## Repository layout

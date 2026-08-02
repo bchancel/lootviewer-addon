@@ -3,7 +3,7 @@ local _, LV = ...
 LV.Guild = {}
 LV.modules.Guild = LV.Guild
 
-function LV.Guild:CurrentInfo()
+function LV.Guild:ActualInfo()
     local guildName, rankName, rankIndex, guildRealm = GetGuildInfo("player")
     guildName = LV.Util:Trim(guildName)
     if guildName == "" then
@@ -22,6 +22,89 @@ function LV.Guild:CurrentInfo()
         rankIndex = tonumber(rankIndex) or 99,
         key = self:BuildKey(guildName, guildRealm),
     }
+end
+
+function LV.Guild:CurrentInfo()
+    return self.sessionOverride or self:ActualInfo()
+end
+
+function LV.Guild:ClearSessionOverride(silent)
+    local previous = self.sessionOverride
+    self.sessionOverride = nil
+    if not silent then
+        if previous then
+            LV:Print("Cleared the guild session override.")
+        else
+            LV:Print("No guild session override is active.")
+        end
+    end
+    if LV.UI and LV.UI.Refresh then
+        LV.UI:Refresh()
+    end
+    return previous ~= nil
+end
+
+function LV.Guild:SetSessionOverride(selector)
+    selector = LV.Util:Trim(selector)
+    local lowered = selector:lower()
+    if selector == "" or lowered == "clear" or lowered == "off" or lowered == "none" then
+        return self:ClearSessionOverride(false)
+    end
+
+    LV.Store:InitializeIfNeeded()
+    local guilds = LV.Store.db and LV.Store.db.g or {}
+    local normalized = LV.Util:NormalizeSlug(selector)
+    local matches = {}
+
+    for key, record in pairs(guilds or {}) do
+        if type(record) == "table" then
+            local regionSlug, realmSlug, guildSlug = tostring(key):match("^([^:]+):([^:]+):(.+)$")
+            local exactKey = tostring(key):lower() == lowered
+            local guildMatch = guildSlug and guildSlug == normalized
+            local realmGuildMatch = realmSlug and guildSlug
+                and (realmSlug .. ":" .. guildSlug) == lowered
+            if exactKey or guildMatch or realmGuildMatch then
+                matches[#matches + 1] = {
+                    key = key,
+                    region = regionSlug,
+                    realm = realmSlug,
+                    guild = guildSlug,
+                    exact = exactKey,
+                }
+            end
+        end
+    end
+
+    if #matches == 0 then
+        LV:Print("No stored guild matches '" .. selector .. "'. Sync or visit that guild before using the override.")
+        return false
+    elseif #matches > 1 then
+        local keys = {}
+        for _, match in ipairs(matches) do
+            keys[#keys + 1] = match.key
+        end
+        table.sort(keys)
+        LV:Print("That guild name is ambiguous. Use its full key: " .. table.concat(keys, ", "))
+        return false
+    end
+
+    local match = matches[1]
+    local displayName = match.exact and tostring(match.guild or selector):gsub("%-", " ") or selector
+    self.sessionOverride = {
+        name = displayName,
+        realm = tostring(match.realm or LV.Util:RealmName()),
+        rankName = "Session Override",
+        rankIndex = 99,
+        key = match.key,
+        override = true,
+        selector = selector,
+    }
+    LV.Store:GuildRecord(match.key)
+    LV:Print("Guild session override set to " .. displayName .. " (" .. match.key .. ").")
+    if LV.UI and LV.UI.Refresh then
+        LV.UI:Refresh()
+    end
+    return true
 end
 
 function LV.Guild:BuildKey(guildName, realmName)

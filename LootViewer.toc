@@ -1,8 +1,9 @@
-## Interface: 120007
+## Interface: 120100, 120007
 ## Title: LootViewer
 ## Notes: Guild-scoped raid attendance, loot, and trade tracking for LootViewer.
 ## Author: LootViewer
-## Version: 0.1.0
+## Version: 12.1.0
+## X-Curse-Project-ID: 1635786
 ## SavedVariables: LootViewerDB
 
 LootViewer.lua

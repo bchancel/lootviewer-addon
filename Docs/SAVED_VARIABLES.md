@@ -2,6 +2,9 @@
 
 This draft is the contract for the future `LootViewer.lua` upload parser.
 
+The top-level `g` table contains guild records. The compact `c.ui.window` table
+stores only the local `/lv` window size and position and is not guild data.
+
 ## Guild Key
 
 `region:realm:guild`, lower-cased and slugged.

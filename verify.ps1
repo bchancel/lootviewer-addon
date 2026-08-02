@@ -8,8 +8,8 @@ if (-not (Test-Path -LiteralPath $tocPath -PathType Leaf)) {
 }
 
 $tocText = Get-Content -LiteralPath $tocPath -Raw
-if ($tocText -notmatch '(?m)^## Interface:\s*120007\s*$') {
-    throw "LootViewer.toc is not targeting Retail interface 120007."
+if ($tocText -notmatch '(?m)^## Interface:\s*120100,\s*120007\s*$') {
+    throw "LootViewer.toc is not targeting Retail interfaces 120100 and 120007."
 }
 if ($tocText -notmatch '(?m)^## Title:\s*LootViewer\s*$') {
     throw "LootViewer.toc has an unexpected title."
