@@ -1,0 +1,8 @@
+deploy.ps1
+dist/
+.build/
+*.zip
+.agents/
+.codex/
+.idea/
+.vscode/

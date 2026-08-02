@@ -1,0 +1,141 @@
+# SavedVariables Draft
+
+This draft is the contract for the future `LootViewer.lua` upload parser.
+
+## Guild Key
+
+`region:realm:guild`, lower-cased and slugged.
+
+Example:
+
+```text
+us:sargeras:sanctimonious
+```
+
+## Guild Record
+
+```lua
+{
+  v = 1,
+  cfg = {
+    enabled = true,
+    prompt = true,
+    promptBefore = 60,
+    promptAfter = 60,
+    promptTimeout = 30,
+    lateGrace = 10,
+    authority = "assist",
+    rankMin = 0,
+    rankMax = 3,
+    tradeRaid = true,
+    whisper = "bench",
+    selectedTeam = "main",
+    teams = {
+      {
+        id = "main",
+        name = "Main",
+        tz = "EST",
+        schedules = {
+          { w = 3, h = 20, m = 0, d = 180 },
+          { w = 5, h = 20, m = 0, d = 180 },
+        },
+      },
+      {
+        id = "altraid",
+        name = "AltRaid",
+        tz = "EST",
+        schedules = {
+          { w = 7, h = 20, m = 0, d = 180 },
+        },
+      },
+    },
+    pruneDays = 0,
+  },
+  d = {
+    n = { "Meemage-Sargeras" },
+    i = { "item:19019::::::::90:::::" },
+    s = { "Manaforge Omega", "Mythic", "Dimensius", "Main" },
+  },
+  gr = {},
+  r = {},
+  l = {},
+  t = {},
+  o = {},
+  x = {},
+}
+```
+
+## Raid Session
+
+```lua
+{
+  id = "r1",
+  st = 1780000000,
+  en = 1780007200,
+  z = 1,
+  iid = 9999,
+  diff = 2,
+  did = 16,
+  team = "main",
+  tn = 4,
+  by = 1,
+  p = { [1] = 1780000000 },
+  b = { [2] = 1780000000 },
+  late = { [3] = 1780000900 },
+  kills = {
+    {
+      ts = 1780001200,
+      e = 3131,
+      b = 3,
+      d = 16,
+      n = 20,
+      p = { 1, 3, 4 },
+      bench = { 2 },
+      late = { 3 },
+    },
+  },
+}
+```
+
+## Loot Event
+
+```lua
+{
+  id = "l1",
+  ts = 1780001210,
+  sid = "r1",
+  e = 3131,
+  iid = 9999,
+  inst = 1,
+  boss = 3,
+  did = 16,
+  diff = 2,
+  p = 1,
+  item = 1,
+  itemID = 19019,
+  q = 1,
+  r = "need",
+  raw = "NeedMainSpec",
+  src = "boss",
+  boe = nil,
+  wb = nil,
+  tr = "t1",
+}
+```
+
+## Trade Event
+
+```lua
+{
+  id = "t1",
+  ts = 1780001800,
+  sid = "r1",
+  f = 1,
+  to = 2,
+  item = 1,
+  itemID = 19019,
+  loot = "l1",
+  src = "observed",
+  by = 1,
+}
+```
