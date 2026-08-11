@@ -32,6 +32,7 @@ us:sargeras:sanctimonious
     rankMax = 3,
     tradeRaid = true,
     whisper = "bench",
+    seasonMode = "auto",
     selectedTeam = "main",
     teams = {
       {
@@ -74,11 +75,13 @@ us:sargeras:sanctimonious
 {
   id = "r1",
   st = 1780000000,
+  sst = 1780000400,
   en = 1780007200,
   z = 1,
   iid = 9999,
   diff = 2,
   did = 16,
+  sea = "midnight-2",
   team = "main",
   tn = 4,
   by = 1,
@@ -99,6 +102,16 @@ us:sargeras:sanctimonious
   },
 }
 ```
+
+`st` records when tracking began. For a scheduled raid, `sst` records the
+scheduled start in server time and is the anchor for `lateGrace`; inviting or
+starting tracking early does not consume the grace period. Ad-hoc sessions do
+not have `sst` and use their tracking start instead.
+
+`seasonMode` is `"auto"` by default and can be set to a known season ID to
+override the tier used for scheduled prompts. New raid sessions store `sea` as
+a compact season ID. Records created by older addon versions are classified on
+read from their instance ID/name and, as a final fallback, their start date.
 
 ## Loot Event
 

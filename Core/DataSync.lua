@@ -45,6 +45,7 @@ local configStrings = {
     authority = true,
     whisper = true,
     selectedTeam = true,
+    seasonMode = true,
 }
 
 local function split(text, separator)
@@ -402,6 +403,7 @@ function LV.DataSync:BuildExport(guildKey)
             { "tradeRaid", boolString(cfg.tradeRaid) },
             { "whisper", cfg.whisper },
             { "selectedTeam", cfg.selectedTeam },
+            { "seasonMode", cfg.seasonMode },
             { "pruneDays", cfg.pruneDays },
         })
 
@@ -447,11 +449,13 @@ function LV.DataSync:BuildExport(guildKey)
         lines[#lines + 1] = line("R", {
             { "id", raid.id },
             { "st", raid.st },
+            { "sst", raid.sst },
             { "en", raid.en },
             { "z", stringForID(guildKey, raid.z) },
             { "iid", raid.iid },
             { "diff", stringForID(guildKey, raid.diff) },
             { "did", raid.did },
+            { "sea", raid.sea or LV.Seasons:RaidSeasonID(guildKey, raid) },
             { "team", raid.team },
             { "tn", stringForID(guildKey, raid.tn) },
             { "by", nameForID(guildKey, raid.by) },
@@ -764,11 +768,13 @@ function LV.DataSync:ImportRaid(guildKey, record, sender, fields, remoteRaidMap)
         raid = {
             id = raidID,
             st = tonumber(fields.st) or LV.Util:Now(),
+            sst = tonumber(fields.sst),
             en = tonumber(fields.en) or tonumber(fields.st) or LV.Util:Now(),
             z = LV.Store:StringID(guildKey, fields.z or ""),
             iid = tonumber(fields.iid) or 0,
             diff = LV.Store:StringID(guildKey, fields.diff or ""),
             did = tonumber(fields.did) or 0,
+            sea = LV.Seasons:IsSeasonID(fields.sea) and fields.sea or nil,
             team = fields.team ~= "" and fields.team or "main",
             tn = fields.tn ~= "" and LV.Store:StringID(guildKey, fields.tn) or nil,
             by = fields.by ~= "" and LV.Store:NameID(guildKey, normalizedName(fields.by)) or nil,
@@ -791,8 +797,10 @@ function LV.DataSync:ImportRaid(guildKey, record, sender, fields, remoteRaidMap)
     else
         ensureRaidMaps(raid)
         raid.en = math.max(tonumber(raid.en) or 0, tonumber(fields.en) or 0)
+        raid.sst = raid.sst or tonumber(fields.sst)
         raid.z = raid.z or LV.Store:StringID(guildKey, fields.z or "")
         raid.diff = raid.diff or LV.Store:StringID(guildKey, fields.diff or "")
+        raid.sea = raid.sea or (LV.Seasons:IsSeasonID(fields.sea) and fields.sea or nil)
         raid.tn = raid.tn or (fields.tn ~= "" and LV.Store:StringID(guildKey, fields.tn) or nil)
     end
 

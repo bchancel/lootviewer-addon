@@ -23,6 +23,15 @@ local function unitFullName(unit)
     return LV.Util:UnitFullName(unit)
 end
 
+local function isGuildRaidGroup()
+    if type(InGuildParty) ~= "function" then
+        return true
+    end
+
+    local ok, inGuildParty = pcall(InGuildParty)
+    return ok and inGuildParty and true or false
+end
+
 local function serverWeekMinute()
     local current = nil
     if C_DateAndTime and C_DateAndTime.GetCurrentCalendarTime then
@@ -54,6 +63,17 @@ local function inWeeklyWindow(nowMinute, startMinute, beforeMinutes, durationMin
     return false, nil
 end
 
+local function scheduledServerTimestamp(startMinute, currentMinute)
+    startMinute = tonumber(startMinute)
+    currentMinute = tonumber(currentMinute)
+    if not startMinute or not currentMinute then
+        return nil
+    end
+
+    local serverNow = LV.Util:ServerNow()
+    return serverNow - (serverNow % 60) + ((startMinute - currentMinute) * 60)
+end
+
 local function normalizeAdHocHours(hours)
     hours = tonumber(hours) or 3
     if hours < 0.25 then
@@ -76,7 +96,7 @@ function LV.Raid:EnsureAttendanceMaps(session)
     session.noshow = session.noshow or {}
 end
 
-function LV.Raid:FindActiveSchedule(cfg, now)
+function LV.Raid:FindActiveSchedule(cfg, now, teamID)
     if not cfg or type(cfg.teams) ~= "table" then
         return nil
     end
@@ -86,17 +106,19 @@ function LV.Raid:FindActiveSchedule(cfg, now)
     local currentMinute = serverWeekMinute()
 
     for teamIndex, team in ipairs(cfg.teams) do
-        for slotIndex, slot in ipairs(team.schedules or {}) do
-            local weekday = tonumber(slot.w)
-            local hour = tonumber(slot.h) or 20
-            local minute = tonumber(slot.m) or 0
-            local duration = tonumber(slot.d) or 180
+        if not teamID or tostring(team.id) == tostring(teamID) then
+            for slotIndex, slot in ipairs(team.schedules or {}) do
+                local weekday = tonumber(slot.w)
+                local hour = tonumber(slot.h) or 20
+                local minute = tonumber(slot.m) or 0
+                local duration = tonumber(slot.d) or 180
 
-            if weekday then
-                local startMinute = ((weekday - 1) * 24 * 60) + (hour * 60) + minute
-                local matched, matchedStart = inWeeklyWindow(currentMinute, startMinute, before, duration, after)
-                if matched then
-                    return team, teamIndex, slotIndex, slot, matchedStart, matchedStart + duration
+                if weekday then
+                    local startMinute = ((weekday - 1) * 24 * 60) + (hour * 60) + minute
+                    local matched, matchedStart = inWeeklyWindow(currentMinute, startMinute, before, duration, after)
+                    if matched then
+                        return team, teamIndex, slotIndex, slot, matchedStart, matchedStart + duration, currentMinute
+                    end
                 end
             end
         end
@@ -108,6 +130,10 @@ end
 function LV.Raid:ShouldPrompt()
     local guildInfo = LV.Guild:CurrentInfo()
     if not guildInfo or not IsInRaid() then
+        return false
+    end
+
+    if not isGuildRaidGroup() then
         return false
     end
 
@@ -124,13 +150,19 @@ function LV.Raid:ShouldPrompt()
         return false
     end
 
+    local instance = LV.Util:CurrentInstance()
+    local instanceSeason = LV.Seasons:InstanceSeasonID(instance.instanceID, instance.name)
+    local trackingSeason = LV.Seasons:TrackingSeasonID(cfg)
+    if not instanceSeason or instanceSeason ~= trackingSeason then
+        return false
+    end
+
     local now = LV.Util:Now()
     local team, _, slotIndex, _, startTime = self:FindActiveSchedule(cfg, now)
     if not team then
         return false
     end
 
-    local instance = LV.Util:CurrentInstance()
     local signature = guildInfo.key .. ":" .. tostring(team.id) .. ":" .. tostring(slotIndex) .. ":" .. tostring(startTime) .. ":" .. tostring(instance.instanceID)
     if self.prompted[signature] then
         return false
@@ -175,16 +207,23 @@ function LV.Raid:StartSession(reason, teamID, options)
 
     local instance = LV.Util:CurrentInstance()
     local team = LV.Store:GetTeamByID(record, teamID) or LV.Store:GetSelectedTeam(record)
+    local scheduledStart = nil
+    if team and not (type(options) == "table" and options.adhoc) then
+        local _, _, _, _, startMinute, _, currentMinute = self:FindActiveSchedule(record.cfg, nil, team.id)
+        scheduledStart = scheduledServerTimestamp(startMinute, currentMinute)
+    end
     local raidID = LV.Store:NewID(record, "raid", "r")
     local playerID = LV.Store:NameID(guildInfo.key, LV.Util:PlayerFullName())
     local session = {
         id = raidID,
         st = LV.Util:Now(),
+        sst = scheduledStart,
         en = LV.Util:Now(),
         z = LV.Store:StringID(guildInfo.key, instance.name),
         iid = instance.instanceID,
         diff = LV.Store:StringID(guildInfo.key, instance.difficultyName),
         did = instance.difficultyID,
+        sea = LV.Seasons:InstanceSeasonID(instance.instanceID, instance.name) or LV.Seasons:TrackingSeasonID(record.cfg),
         team = team and team.id or "main",
         tn = team and LV.Store:StringID(guildInfo.key, team.name) or nil,
         by = playerID,
@@ -451,7 +490,14 @@ function LV.Raid:MaybePromptLate(fullName, nameID)
 
     local cfg = LV.Guild:CurrentConfig()
     local grace = ((cfg and tonumber(cfg.lateGrace)) or 10) * 60
-    if LV.Util:Now() <= (tonumber(session.st) or 0) + grace then
+    local lateAnchor = tonumber(session.sst)
+    if not lateAnchor and not session.adhoc and cfg then
+        local _, _, _, _, startMinute, _, currentMinute = self:FindActiveSchedule(cfg, nil, session.team)
+        lateAnchor = scheduledServerTimestamp(startMinute, currentMinute)
+        session.sst = lateAnchor
+    end
+    lateAnchor = lateAnchor or tonumber(session.st) or 0
+    if LV.Util:ServerNow() <= lateAnchor + grace then
         return
     end
 

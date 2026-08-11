@@ -9,8 +9,13 @@ Retail targets: WoW `12.1.0` and `12.0.7` / interfaces `120100, 120007`.
 - Tracks raid sessions, encounter attendance snapshots, bench credit, and late flags.
 - Captures loot and follow-up trades while preserving stable event identities.
 - Supports separate raid teams and schedules within one guild.
+- Anchors scheduled-raid lateness to the configured server-time start plus the grace period, even when tracking starts early.
+- Tracks Midnight raid tiers separately, with season filters across attendance, meter totals, loot, and trades.
+- Keeps 1-6 month attendance ranges inside the current season instead of carrying prior-season raids across a tier boundary.
+- Limits scheduled prompts to qualifying guild groups inside raids from the active tier.
 - Stores compact, guild-scoped history across characters on the same account.
 - Provides `/lv` configuration, attendance, and history views.
+- Adds season-owned tier-token catalogs and a Tier history grouped by token type, slot, and raid difficulty; seasons without a catalog report that no tier tokens are defined.
 - Supports a session-only `/lv guild_set <guild>` override for viewing stored guild data from unguilded alts.
 - Synchronizes records between participating guild members through addon messages.
 

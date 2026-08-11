@@ -30,6 +30,13 @@ local ATTENDANCE_PAGE_SIZE = 6
 local METER_DETAIL_PAGE_SIZE = 8
 local HISTORY_PAGE_SIZE = 15
 
+local difficultyLabels = {
+    [14] = "Normal",
+    [15] = "Heroic",
+    [16] = "Mythic",
+    [17] = "Raid Finder",
+}
+
 local SIDEBAR_WIDTH = 220
 
 local pageDefinitions = {
@@ -50,7 +57,7 @@ local pageDefinitions = {
     },
     history = {
         label = "History",
-        hint = "Recent loot, trades, and excluded items.",
+        hint = "Recent loot, season tier tokens, trades, and excluded items.",
         icon = "Interface\\Icons\\INV_Misc_Book_09",
     },
     sync = {
@@ -92,11 +99,6 @@ local classValues = {
     { value = "WARLOCK", label = "Warlock" },
     { value = "WARRIOR", label = "Warrior" },
 }
-
-local meterMonthValues = {}
-for month = 1, 12 do
-    meterMonthValues[#meterMonthValues + 1] = { value = month, label = tostring(month) }
-end
 
 local meterColors = {
     here = { 0.16, 0.68, 0.28, 0.95 },
@@ -176,6 +178,15 @@ end
 
 local function compareText(a, b)
     return tostring(a or ""):lower() < tostring(b or ""):lower()
+end
+
+local function containsValue(values, value)
+    for _, item in ipairs(values or {}) do
+        if item.value == value then
+            return true
+        end
+    end
+    return false
 end
 
 local function popupEditBox(dialog)
@@ -639,7 +650,7 @@ function LV.UI:RenderConfig()
     local cfg = LV.Store:GetConfig(guildInfo.key)
     self:SetPageHeader("Configuration", pageDefinitions.config.hint, guildInfo)
 
-    local tracking = LV.Widgets:Section(self.content, "Tracking", 108)
+    local tracking = LV.Widgets:Section(self.content, "Tracking", 142)
     tracking:SetPoint("TOPLEFT", 22, -102)
     tracking:SetPoint("RIGHT", -22, 0)
 
@@ -676,6 +687,19 @@ function LV.UI:RenderConfig()
     end, cfg.rankMax or 3))
     rankMax:SetText(tostring(cfg.rankMax or 3))
     rankMax:SetPoint("LEFT", rankMin, "RIGHT", 8, 0)
+
+    if cfg.seasonMode ~= "auto" and not LV.Seasons:IsSeasonID(cfg.seasonMode) then
+        cfg.seasonMode = "auto"
+    end
+    local seasonLabel = LV.Widgets:Label(tracking, "Current Tier")
+    seasonLabel:SetPoint("TOPLEFT", 24, -112)
+    local season = LV.Widgets:Dropdown(tracking, LV.Seasons:TrackingModeValues(), function()
+        return cfg.seasonMode or "auto"
+    end, function(value)
+        cfg.seasonMode = value
+    end, 232)
+    season:SetPoint("LEFT", seasonLabel, "RIGHT", 18, 0)
+    LV.Widgets:SetTooltip(season, "Automatic changes tiers on the configured season start date. This controls scheduled raid prompts.")
 
     local timing = LV.Widgets:Section(self.content, "Timing", 104)
     timing:SetPoint("TOPLEFT", tracking, "BOTTOMLEFT", 0, -12)
@@ -1242,10 +1266,10 @@ function LV.UI:RaidTeamName(guildKey, raid)
     return raid.team or "main"
 end
 
-function LV.UI:AttendanceRows(record)
+function LV.UI:AttendanceRows(guildKey, record, seasonFilter)
     local rows = {}
     for raidID, raid in pairs((record and record.r) or {}) do
-        if type(raid) == "table" then
+        if type(raid) == "table" and LV.Seasons:RaidMatchesFilter(guildKey, raid, seasonFilter) then
             rows[#rows + 1] = { id = raidID, raid = raid }
         end
     end
@@ -1400,14 +1424,15 @@ function LV.UI:AltRowsForMain(guildKey, mainID)
     return rows
 end
 
-function LV.UI:AttendanceMeterRows(guildKey, record, months, teamID, showPugs)
-    local cutoff = LV.Util:Now() - ((tonumber(months) or 3) * 30 * 86400)
+function LV.UI:AttendanceMeterRows(guildKey, record, range, teamID, showPugs)
     local players = {}
     local raidRows = {}
     local groupedByRaid = {}
 
     for raidID, raid in pairs((record and record.r) or {}) do
-        if type(raid) == "table" and (tonumber(raid.st) or 0) >= cutoff and (teamID == "all" or raid.team == teamID) then
+        if type(raid) == "table"
+            and LV.Seasons:RaidMatchesRange(guildKey, raid, range)
+            and (teamID == "all" or raid.team == teamID) then
             raidRows[#raidRows + 1] = { id = raidID, raid = raid }
         end
     end
@@ -1512,6 +1537,11 @@ function LV.UI:RenderAttendance()
     end
 
     local record = LV.Store:GuildRecord(guildInfo.key)
+    local seasonValues = LV.Seasons:FilterValues(true)
+    self.attendanceSeason = self.attendanceSeason or "current"
+    if not containsValue(seasonValues, self.attendanceSeason) then
+        self.attendanceSeason = "current"
+    end
     local session = LV.Raid:GetActiveSession()
     local statusText = "No active raid"
     if session then
@@ -1529,8 +1559,22 @@ function LV.UI:RenderAttendance()
         stop:SetPoint("TOPRIGHT", -24, -100)
     end
 
+    local seasonLabel = LV.Widgets:Label(self.content, "Season")
+    seasonLabel:SetPoint("TOPLEFT", 24, -109)
+    local season = LV.Widgets:Dropdown(self.content, seasonValues, function()
+        return self.attendanceSeason
+    end, function(value)
+        self.attendanceSeason = value
+        self.attendanceSelectedRaid = nil
+        self.attendanceOffset = 0
+        self.attendanceDetailOffset = 0
+        self.editingRaidID = nil
+        self:Refresh()
+    end, 210)
+    season:SetPoint("LEFT", seasonLabel, "RIGHT", 12, -1)
+
     local summary = LV.Widgets:Section(self.content, "Raid Nights", 248)
-    summary:SetPoint("TOPLEFT", 22, -138)
+    summary:SetPoint("TOPLEFT", 22, -146)
     summary:SetPoint("RIGHT", -22, 0)
     self:RenderAttendanceHistory(summary, guildInfo.key, record)
 
@@ -1541,13 +1585,26 @@ function LV.UI:RenderAttendance()
 end
 
 function LV.UI:RenderAttendanceHistory(parent, guildKey, record)
-    local rows = self:AttendanceRows(record)
+    local rows = self:AttendanceRows(guildKey, record, self.attendanceSeason)
     self.attendanceOffset = tonumber(self.attendanceOffset) or 0
     if self.attendanceOffset >= #rows then
         self.attendanceOffset = math.max(0, #rows - ATTENDANCE_PAGE_SIZE)
     end
-    if (not self.attendanceSelectedRaid or type(record.r[self.attendanceSelectedRaid]) ~= "table") and rows[1] then
-        local activeRaidID = record.cur and record.r[record.cur] and record.cur
+    local selectedVisible = false
+    for _, row in ipairs(rows) do
+        if tostring(row.id) == tostring(self.attendanceSelectedRaid) then
+            selectedVisible = true
+            break
+        end
+    end
+    if not selectedVisible and rows[1] then
+        local activeRaidID = nil
+        for _, row in ipairs(rows) do
+            if record.cur and tostring(row.id) == tostring(record.cur) then
+                activeRaidID = row.id
+                break
+            end
+        end
         self.attendanceSelectedRaid = activeRaidID or rows[1].id
         self.attendanceDetailOffset = 0
         for index, row in ipairs(rows) do
@@ -1556,6 +1613,9 @@ function LV.UI:RenderAttendanceHistory(parent, guildKey, record)
                 break
             end
         end
+    elseif #rows == 0 then
+        self.attendanceSelectedRaid = nil
+        self.editingRaidID = nil
     end
 
     local count = LV.Widgets:Text(parent.header, tostring(#rows) .. " raid(s)")
@@ -1999,7 +2059,7 @@ end
 
 function LV.UI:RefreshMeterDetail(guildKey, playerID)
     local record = LV.Store:GuildRecord(guildKey)
-    local rows, _, raidCount = self:AttendanceMeterRows(guildKey, record, self.meterMonths or 3, self.meterTeamID or "all", self.meterShowPugs)
+    local rows, _, raidCount = self:AttendanceMeterRows(guildKey, record, self.meterRange or "months:3", self.meterTeamID or "all", self.meterShowPugs)
     for _, row in ipairs(rows) do
         if tonumber(row.id) == tonumber(playerID) then
             self:ShowMeterPlayerDetail(guildKey, row, raidCount)
@@ -2020,12 +2080,12 @@ function LV.UI:ShowPlayerDetailForName(guildKey, nameID)
 
     local record = LV.Store:GuildRecord(guildKey)
     local searches = {
-        { months = self.meterMonths or 3, team = self.meterTeamID or "all" },
-        { months = 12, team = "all" },
+        { range = self.meterRange or "months:3", team = self.meterTeamID or "all" },
+        { range = "all", team = "all" },
     }
 
     for _, search in ipairs(searches) do
-        local rows, _, raidCount = self:AttendanceMeterRows(guildKey, record, search.months, search.team, true)
+        local rows, _, raidCount = self:AttendanceMeterRows(guildKey, record, search.range, search.team, true)
         for _, row in ipairs(rows) do
             if tonumber(row.id) == tonumber(playerID) then
                 self.meterDetailOffset = 0
@@ -2234,9 +2294,10 @@ function LV.UI:RenderAttendanceMeter()
 
     local record = LV.Store:GuildRecord(guildInfo.key)
     local cfg = LV.Store:GetConfig(guildInfo.key)
-    self.meterMonths = tonumber(self.meterMonths) or 3
-    if self.meterMonths < 1 or self.meterMonths > 12 then
-        self.meterMonths = 3
+    local rangeValues = LV.Seasons:MeterRangeValues()
+    self.meterRange = self.meterRange or "months:3"
+    if not containsValue(rangeValues, self.meterRange) then
+        self.meterRange = "months:3"
     end
     self.meterTeamID = self.meterTeamID or "all"
 
@@ -2262,18 +2323,19 @@ function LV.UI:RenderAttendanceMeter()
     showPugs:SetPoint("TOPLEFT", 24, -106)
     showPugs:SetChecked(self.meterShowPugs)
 
-    local monthsLabel = LV.Widgets:Label(self.content, "Last Months")
-    monthsLabel:SetPoint("TOPLEFT", 280, -109)
-    local months = LV.Widgets:Dropdown(self.content, meterMonthValues, function()
-        return self.meterMonths
+    local rangeLabel = LV.Widgets:Label(self.content, "Stats Range")
+    rangeLabel:SetPoint("TOPLEFT", 210, -109)
+    local range = LV.Widgets:Dropdown(self.content, rangeValues, function()
+        return self.meterRange
     end, function(value)
-        self.meterMonths = tonumber(value) or 3
+        self.meterRange = value
+        self.meterScroll = 0
         self:Refresh()
-    end, 58)
-    months:SetPoint("LEFT", monthsLabel, "RIGHT", 10, -1)
+    end, 190)
+    range:SetPoint("LEFT", rangeLabel, "RIGHT", 10, -1)
 
     local teamLabel = LV.Widgets:Label(self.content, "Raid Tag")
-    teamLabel:SetPoint("LEFT", months, "RIGHT", 22, 1)
+    teamLabel:SetPoint("LEFT", range, "RIGHT", 22, 1)
     local team = LV.Widgets:Dropdown(self.content, teamValues, function()
         return self.meterTeamID
     end, function(value)
@@ -2286,7 +2348,7 @@ function LV.UI:RenderAttendanceMeter()
     panel:SetPoint("TOPLEFT", 22, -146)
     panel:SetPoint("BOTTOMRIGHT", -22, 22)
 
-    local rows, maxTotal, raidCount, guildRows, pugRows = self:AttendanceMeterRows(guildInfo.key, record, self.meterMonths, self.meterTeamID, self.meterShowPugs)
+    local rows, maxTotal, raidCount, guildRows, pugRows = self:AttendanceMeterRows(guildInfo.key, record, self.meterRange, self.meterTeamID, self.meterShowPugs)
     local displayRows = self:MeterDisplayRows(guildRows, pugRows, self.meterShowPugs)
 
     local countText
@@ -2447,7 +2509,11 @@ function LV.UI:LootItemDisplay(guildKey, row)
         pcall(C_Item.RequestLoadItemDataByID, itemID)
     end
 
-    local displayName = itemName or tostring(itemKey or ""):match("%[(.-)%]") or (itemID > 0 and ("Item " .. tostring(itemID)) or tostring(itemKey or "item"))
+    local tierToken = LV.Tier and LV.Tier.Token and LV.Tier:Token(itemID)
+    local displayName = itemName
+        or (tierToken and tierToken.name)
+        or tostring(itemKey or ""):match("%[(.-)%]")
+        or (itemID > 0 and ("Item " .. tostring(itemID)) or tostring(itemKey or "item"))
     local tooltipLink = itemLink or (itemKey ~= "" and itemKey or (itemID > 0 and ("item:" .. tostring(itemID)) or nil))
     local color = ITEM_QUALITY_COLORS and itemQuality and ITEM_QUALITY_COLORS[itemQuality]
     return displayName, tooltipLink, color, itemIcon
@@ -2612,7 +2678,42 @@ function LV.UI:LootDifficultyDisplay(guildKey, row)
         return difficulty
     end
     local difficultyID = tonumber(row and row.did) or 0
-    return difficultyID > 0 and tostring(difficultyID) or ""
+    return difficultyLabels[difficultyID] or (difficultyID > 0 and tostring(difficultyID) or "")
+end
+
+function LV.UI:TierHistoryGroups(guildKey, seasonFilter, typeFilter)
+    local record = LV.Store:GuildRecord(guildKey)
+    local groups = {}
+    local total = 0
+    local seasonID = LV.Seasons:ResolveFilter(seasonFilter or "current")
+    typeFilter = typeFilter or "all"
+
+    for _, definition in ipairs(LV.Tier:Types(seasonID)) do
+        groups[definition.id] = {
+            definition = definition,
+            rows = {},
+        }
+    end
+
+    for index = #((record and record.l) or {}), 1, -1 do
+        local row = record.l[index]
+        local token = LV.Tier:TokenForRow(guildKey, row)
+        if token
+            and token.seasonID == seasonID
+            and seasonID == LV.Seasons:EventSeasonID(guildKey, record, row)
+            and (typeFilter == "all" or token.type == typeFilter) then
+            local group = groups[token.type]
+            if group then
+                group.rows[#group.rows + 1] = {
+                    loot = row,
+                    token = token,
+                }
+                total = total + 1
+            end
+        end
+    end
+
+    return groups, total, seasonID
 end
 
 function LV.UI:LootSearchText(guildKey, row)
@@ -2642,7 +2743,8 @@ function LV.UI:FilteredHistoryRows(guildKey)
         local row = record.l[index]
         if type(row) == "table" then
             local excluded = LV.Loot and LV.Loot.IsLootItemExcluded and LV.Loot:IsLootItemExcluded(guildKey, row)
-            if not excluded and (query == "" or self:LootSearchText(guildKey, row):find(query, 1, true)) then
+            local inSeason = LV.Seasons:EventMatchesFilter(guildKey, record, row, self.historySeason)
+            if inSeason and not excluded and (query == "" or self:LootSearchText(guildKey, row):find(query, 1, true)) then
                 rows[#rows + 1] = row
             end
         end
@@ -2925,7 +3027,14 @@ function LV.UI:RenderHistory()
     end
 
     local record = LV.Store:GuildRecord(guildInfo.key)
+    local seasonValues = LV.Seasons:FilterValues(true)
+    self.historySeason = self.historySeason or "current"
+    if not containsValue(seasonValues, self.historySeason) then
+        self.historySeason = "current"
+    end
     self.historyView = self.historyView or "recent"
+    self.tierSeason = self.tierSeason or "current"
+    self.tierType = self.tierType or "all"
     self:SetPageHeader("History", pageDefinitions.history.hint, guildInfo)
 
     local tabHost = self:Track(CreateFrame("Frame", nil, self.content))
@@ -2934,6 +3043,7 @@ function LV.UI:RenderHistory()
     tabHost:SetHeight(38)
     local tabs = {
         { key = "recent", label = "Recent" },
+        { key = "tier", label = "Tier" },
         { key = "trades", label = "Trades" },
         { key = "exclusions", label = "Exclusions" },
     }
@@ -2942,6 +3052,7 @@ function LV.UI:RenderHistory()
         local viewKey = definition.key
         local button = LV.Widgets:Tab(tabHost, definition.label, 112, 38, function()
             self.historyView = viewKey
+            self.historyOffset = 0
             self:Refresh()
         end)
         if previous then
@@ -2953,7 +3064,59 @@ function LV.UI:RenderHistory()
         previous = button
     end
 
-    if self.historyView == "trades" then
+    if self.historyView == "tier" then
+        local tierSeasonValues = {}
+        for _, item in ipairs(seasonValues) do
+            if item.value ~= "all" then
+                tierSeasonValues[#tierSeasonValues + 1] = item
+            end
+        end
+        if not containsValue(tierSeasonValues, self.tierSeason) then
+            self.tierSeason = "current"
+        end
+        local tierSeason = LV.Widgets:Dropdown(tabHost, tierSeasonValues, function()
+            return self.tierSeason
+        end, function(value)
+            self.tierSeason = value
+            self.tierType = "all"
+            self:Refresh()
+        end, 210)
+        tierSeason:SetPoint("RIGHT", 0, 0)
+    elseif self.historyView ~= "exclusions" then
+        local season = LV.Widgets:Dropdown(tabHost, seasonValues, function()
+            return self.historySeason
+        end, function(value)
+            self.historySeason = value
+            self.historyOffset = 0
+            self:Refresh()
+        end, 210)
+        season:SetPoint("RIGHT", 0, 0)
+    end
+
+    if self.historyView == "tier" then
+        if LV.Loot and LV.Loot.ScheduleLootHistoryScan then
+            LV.Loot:ScheduleLootHistoryScan()
+        end
+        local tierSeasonID = LV.Seasons:ResolveFilter(self.tierSeason)
+        local tier = LV.Widgets:Section(self.content, LV.Seasons:Label(tierSeasonID) .. " Tier Tokens", 440)
+        tier:SetPoint("TOPLEFT", 22, -132)
+        tier:SetPoint("BOTTOMRIGHT", -22, 22)
+        local typeValues = LV.Tier:TypeValues(tierSeasonID)
+        if #typeValues > 0 then
+            if not containsValue(typeValues, self.tierType) then
+                self.tierType = "all"
+            end
+            local tierType = LV.Widgets:Dropdown(tier.header, typeValues, function()
+                return self.tierType
+            end, function(value)
+                self.tierType = value
+                self:Refresh()
+            end, 190)
+            tierType:SetPoint("RIGHT", -12, 0)
+        end
+        self:RenderTierHistory(tier, guildInfo.key, self.tierSeason, self.tierType)
+        return
+    elseif self.historyView == "trades" then
         local trades = LV.Widgets:Section(self.content, "Trades", 440)
         trades:SetPoint("TOPLEFT", 22, -132)
         trades:SetPoint("BOTTOMRIGHT", -22, 22)
@@ -3016,6 +3179,99 @@ function LV.UI:RenderHistory()
     page:SetTextColor(unpack(LV.Widgets.colors.muted))
     page:SetPoint("RIGHT", -18, 0)
     self:RenderLootRows(history, guildInfo.key, rows, self.historyOffset)
+end
+
+function LV.UI:RenderTierHistory(parent, guildKey, seasonFilter, typeFilter)
+    local groups, total, seasonID = self:TierHistoryGroups(guildKey, seasonFilter, typeFilter)
+    if not LV.Tier:HasDefinitions(seasonID) then
+        local empty = LV.Widgets:Text(parent, "No tier tokens defined for this season.")
+        empty:SetPoint("TOPLEFT", 24, -50)
+        empty:SetTextColor(unpack(LV.Widgets.colors.muted))
+        return
+    end
+
+    local count = LV.Widgets:Text(parent.header, tostring(total) .. " token(s)")
+    count:SetPoint("RIGHT", -218, 0)
+    count:SetTextColor(unpack(LV.Widgets.colors.muted))
+
+    if total == 0 then
+        local empty = LV.Widgets:Text(parent, "No tier tokens recorded for this season and type.")
+        empty:SetPoint("TOPLEFT", 24, -50)
+        empty:SetTextColor(unpack(LV.Widgets.colors.muted))
+        return
+    end
+
+    self:CreateHistoryColumnHeader(parent, "Date", 24, 76)
+    self:CreateHistoryColumnHeader(parent, "Player", 110, 94)
+    self:CreateHistoryColumnHeader(parent, "Slot", 214, 68)
+    self:CreateHistoryColumnHeader(parent, "Token", 292, 244)
+    self:CreateHistoryColumnHeader(parent, "Difficulty", 546, 88)
+    self:CreateHistoryColumnHeader(parent, "Method", 644, 60, "RIGHT")
+
+    local scroll, scrollContent = LV.Widgets:ScrollFrame(parent)
+    scroll:SetPoint("TOPLEFT", 12, -58)
+    scroll:SetPoint("BOTTOMRIGHT", -12, 10)
+
+    local y = -4
+    local displayIndex = 0
+    for _, definition in ipairs(LV.Tier:Types(seasonID)) do
+        local group = groups[definition.id]
+        if group and #group.rows > 0 then
+            local groupBackground = scrollContent:CreateTexture(nil, "BACKGROUND")
+            groupBackground:SetPoint("TOPLEFT", 4, y + 4)
+            groupBackground:SetPoint("TOPRIGHT", -2, y + 4)
+            groupBackground:SetHeight(24)
+            groupBackground:SetColorTexture(unpack(LV.Widgets.colors.canvasAlt))
+
+            local groupLabel = LV.Widgets:Label(scrollContent,
+                definition.label .. " - " .. definition.family .. " (" .. tostring(#group.rows) .. ")")
+            groupLabel:SetPoint("TOPLEFT", 12, y)
+            groupLabel:SetTextColor(unpack(LV.Widgets.colors.yellow))
+            y = y - 26
+
+            for _, entry in ipairs(group.rows) do
+                local row = entry.loot
+                displayIndex = displayIndex + 1
+                local background = scrollContent:CreateTexture(nil, "BACKGROUND")
+                background:SetPoint("TOPLEFT", 4, y + 4)
+                background:SetPoint("TOPRIGHT", -2, y + 4)
+                background:SetHeight(24)
+                local stripe = displayIndex % 2 == 0 and LV.Widgets.colors.canvasAlt or LV.Widgets.colors.surface
+                background:SetColorTexture(unpack(stripe))
+
+                local dateText = LV.Widgets:Text(scrollContent, date("%m/%d %H:%M", row.ts or 0))
+                dateText:SetPoint("TOPLEFT", 12, y)
+                dateText:SetWidth(76)
+                dateText:SetWordWrap(false)
+                dateText:SetTextColor(unpack(LV.Widgets.colors.text))
+
+                self:CreateHistoryNameButton(scrollContent, guildKey, row.p, 98, y, 94, true)
+
+                local slot = LV.Widgets:Text(scrollContent, entry.token.slot)
+                slot:SetPoint("TOPLEFT", 202, y)
+                slot:SetWidth(68)
+                slot:SetWordWrap(false)
+                slot:SetTextColor(unpack(LV.Widgets.colors.text))
+
+                self:CreateHistoryItemButton(scrollContent, guildKey, row, 280, y, 244, true)
+
+                local difficulty = LV.Widgets:Text(scrollContent, self:LootDifficultyDisplay(guildKey, row))
+                difficulty:SetPoint("TOPLEFT", 534, y)
+                difficulty:SetWidth(88)
+                difficulty:SetWordWrap(false)
+                difficulty:SetTextColor(unpack(LV.Widgets.colors.text))
+
+                local method = LV.Widgets:Text(scrollContent, self:LootMethodDisplay(row))
+                method:SetPoint("TOPLEFT", 632, y)
+                method:SetWidth(60)
+                method:SetJustifyH("RIGHT")
+                method:SetWordWrap(false)
+                method:SetTextColor(unpack(LV.Widgets.colors.text))
+                y = y - 26
+            end
+        end
+    end
+    scrollContent:SetHeight(math.max(1, -y + 4))
 end
 
 function LV.UI:CreateHistoryColumnHeader(parent, text, x, width, justify)
@@ -3130,11 +3386,18 @@ end
 
 function LV.UI:RenderTradeRows(parent, guildKey)
     local record = LV.Store:GuildRecord(guildKey)
-    local count = LV.Widgets:Text(parent.header, tostring(#record.t) .. " trade(s)")
+    local rows = {}
+    for _, row in ipairs(record.t or {}) do
+        if type(row) == "table" and LV.Seasons:EventMatchesFilter(guildKey, record, row, self.historySeason) then
+            rows[#rows + 1] = row
+        end
+    end
+
+    local count = LV.Widgets:Text(parent.header, tostring(#rows) .. " trade(s)")
     count:SetPoint("RIGHT", -18, 0)
     count:SetTextColor(unpack(LV.Widgets.colors.muted))
-    if #record.t == 0 then
-        local empty = LV.Widgets:Text(parent, "No trades recorded yet.")
+    if #rows == 0 then
+        local empty = LV.Widgets:Text(parent, "No trades recorded for this season.")
         empty:SetTextColor(unpack(LV.Widgets.colors.muted))
         empty:SetPoint("TOPLEFT", 24, -50)
         return
@@ -3150,9 +3413,9 @@ function LV.UI:RenderTradeRows(parent, guildKey)
     scroll:SetPoint("BOTTOMRIGHT", -12, 10)
     local itemWidth = math.max(240, (tonumber(parent:GetWidth()) or 700) - 402)
     local y = -4
-    for index = #record.t, 1, -1 do
-        local row = record.t[index]
-        local displayIndex = #record.t - index + 1
+    for index = #rows, 1, -1 do
+        local row = rows[index]
+        local displayIndex = #rows - index + 1
         local background = scrollContent:CreateTexture(nil, "BACKGROUND")
         background:SetPoint("TOPLEFT", 4, y + 4)
         background:SetPoint("TOPRIGHT", -2, y + 4)

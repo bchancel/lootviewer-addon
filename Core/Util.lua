@@ -96,6 +96,18 @@ function LV.Util:Now()
     return time()
 end
 
+function LV.Util:ServerNow()
+    if type(GetServerTime) == "function" then
+        local ok, value = pcall(GetServerTime)
+        value = ok and tonumber(value) or nil
+        if value and value > 0 then
+            return value
+        end
+    end
+
+    return self:Now()
+end
+
 function LV.Util:ItemID(itemLink)
     if not itemLink then
         return nil

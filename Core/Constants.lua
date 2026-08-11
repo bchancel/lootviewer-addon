@@ -24,6 +24,7 @@ LV.Constants = {
             whisper = "bench",
             schedules = {},
             selectedTeam = "main",
+            seasonMode = "auto",
             teams = {
                 {
                     id = "main",

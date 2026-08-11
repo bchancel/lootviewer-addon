@@ -37,6 +37,12 @@ $minor = [int]$Matches[2]
 $patch = [int]$Matches[3]
 $currentVersion = "$major.$minor.$patch"
 
+$runtimePath = Join-Path $PSScriptRoot "LootViewer.lua"
+$runtime = Get-Content -LiteralPath $runtimePath -Raw
+if ($runtime -notmatch '(?m)^LV\.version\s*=\s*"\d+\.\d+\.\d+"\s*$') {
+    throw "Could not find a semantic LV.version value in LootViewer.lua."
+}
+
 if ($NewVersion) {
     if ($NewVersion -notmatch '^\d+\.\d+\.\d+$') {
         throw "Version must use major.minor.patch format (for example, 1.2.0)."
@@ -57,8 +63,10 @@ Write-Host ("Release tagging: " + ($(if ($shouldTag) { "enabled" } else { "disab
 
 $toc = $toc -replace '(?m)^## Version:\s*[^\r\n]+$', "## Version: $version"
 Set-Content -LiteralPath $tocPath -Value $toc -NoNewline
+$runtime = $runtime -replace '(?m)^LV\.version\s*=\s*"\d+\.\d+\.\d+"\s*$', "LV.version = `"$version`""
+Set-Content -LiteralPath $runtimePath -Value $runtime -NoNewline
 
-& (Join-Path $PSScriptRoot "verify.ps1")
+& (Join-Path $PSScriptRoot "build.ps1")
 
 & git add -A
 Assert-LastExitCode "git add -A failed."

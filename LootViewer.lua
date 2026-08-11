@@ -1,7 +1,7 @@
 local addonName, LV = ...
 
 LV.name = addonName
-LV.version = "12.1.0"
+LV.version = "12.1.1"
 LV.frame = CreateFrame("Frame")
 LV.eventHandlers = {}
 LV.modules = {}

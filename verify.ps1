@@ -14,8 +14,16 @@ if ($tocText -notmatch '(?m)^## Interface:\s*120100,\s*120007\s*$') {
 if ($tocText -notmatch '(?m)^## Title:\s*LootViewer\s*$') {
     throw "LootViewer.toc has an unexpected title."
 }
-if ($tocText -notmatch '(?m)^## Version:\s*\d+\.\d+\.\d+\s*$') {
+if ($tocText -notmatch '(?m)^## Version:\s*(\d+\.\d+\.\d+)\s*$') {
     throw "LootViewer.toc does not contain a semantic version."
+}
+$tocVersion = $Matches[1]
+$runtimeText = Get-Content -LiteralPath (Join-Path $root "LootViewer.lua") -Raw
+if ($runtimeText -notmatch '(?m)^LV\.version\s*=\s*"(\d+\.\d+\.\d+)"\s*$') {
+    throw "LootViewer.lua does not contain a semantic LV.version value."
+}
+if ($Matches[1] -ne $tocVersion) {
+    throw "LootViewer.toc version $tocVersion does not match LootViewer.lua version $($Matches[1])."
 }
 if ($tocText -notmatch '(?m)^## SavedVariables:\s*LootViewerDB\s*$') {
     throw "LootViewer.toc does not declare LootViewerDB."
@@ -33,6 +41,8 @@ $expectedTocEntries = @(
     "LootViewer.lua"
     "Core/Constants.lua"
     "Core/Util.lua"
+    "Core/Seasons.lua"
+    "Core/Tier.lua"
     "Core/Store.lua"
     "Core/Guild.lua"
     "Core/Comms.lua"
@@ -136,14 +146,59 @@ if ($releaseWorkflowText -notmatch 'BigWigsMods/packager@v2' -or
 }
 
 $storeText = Get-Content -LiteralPath (Join-Path $root "Core\Store.lua") -Raw
+$utilText = Get-Content -LiteralPath (Join-Path $root "Core\Util.lua") -Raw
+$seasonText = Get-Content -LiteralPath (Join-Path $root "Core\Seasons.lua") -Raw
+$tierText = Get-Content -LiteralPath (Join-Path $root "Core\Tier.lua") -Raw
 $raidText = Get-Content -LiteralPath (Join-Path $root "Events\Raid.lua") -Raw
 $lootText = Get-Content -LiteralPath (Join-Path $root "Events\Loot.lua") -Raw
 $tradeText = Get-Content -LiteralPath (Join-Path $root "Events\Trade.lua") -Raw
+$uiText = Get-Content -LiteralPath (Join-Path $root "UI\MainFrame.lua") -Raw
 if ($storeText -notmatch 'LootViewerDB' -or $storeText -notmatch 'guild') {
     throw "Core/Store.lua no longer exposes the guild-scoped SavedVariables store."
 }
 if ($raidText -notmatch 'ENCOUNTER_' -or $lootText -notmatch 'LOOT_' -or $tradeText -notmatch 'TRADE_') {
     throw "Raid, loot, or trade event capture appears incomplete."
+}
+foreach ($seasonToken in @(
+    'midnight-1', 'midnight-2', '20260817',
+    'Sporefall', 'The Voidspire', "March on Quel'Danas", 'The Dreamrift',
+    'The Venomous Abyss', 'The Tidebound Grotto',
+    '1592', '2912', '2913', '2939', '2987', '3004'
+)) {
+    if ($seasonText -notmatch [regex]::Escape($seasonToken)) {
+        throw "Core/Seasons.lua is missing expected tier data: $seasonToken"
+    }
+}
+foreach ($tierItemID in 270909..270929) {
+    if ($tierText -notmatch "itemID\s*=\s*$tierItemID") {
+        throw "Core/Tier.lua is missing Midnight Season 2 tier item ID: $tierItemID"
+    }
+}
+if ($tierText -notmatch 'seasonCatalogs' -or $tierText -notmatch 'HasDefinitions') {
+    throw "Core/Tier.lua no longer stores tier token definitions by season."
+}
+foreach ($tierToken in @(
+    'Slumbering Coil Curio', 'Venomwoven', 'Venomcured', 'Venomcast', 'Venomforged',
+    'Head', 'Chest', 'Hands', 'Legs', 'Shoulders'
+)) {
+    if ($tierText -notmatch [regex]::Escape($tierToken)) {
+        throw "Core/Tier.lua is missing expected tier token data: $tierToken"
+    }
+}
+if ($raidText -notmatch 'InGuildParty' -or $raidText -notmatch 'TrackingSeasonID') {
+    throw "Scheduled raid prompts are no longer restricted to the active guild tier."
+}
+if ($utilText -notmatch 'GetServerTime' -or $raidText -notmatch 'session\.sst' -or $raidText -notmatch 'lateAnchor') {
+    throw "Scheduled late attendance is no longer anchored to the server-time raid start."
+}
+if ($seasonText -notmatch 'for month = 1, 6 do' -or
+    $seasonText -notmatch 'RaidSeasonID\(guildKey, raid\) == self:CurrentSeasonID\(\)' -or
+    $uiText -notmatch 'attendanceSeason' -or
+    $uiText -notmatch 'meterRange' -or
+    $uiText -notmatch 'historySeason' -or
+    $uiText -notmatch 'RenderTierHistory' -or
+    $uiText -notmatch 'No tier tokens defined for this season') {
+    throw "Season filters or the 1-6 month attendance ranges appear incomplete."
 }
 
 $deployPath = Join-Path $root "deploy.ps1"
