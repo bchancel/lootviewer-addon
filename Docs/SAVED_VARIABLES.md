@@ -2,8 +2,36 @@
 
 This draft is the contract for the future `LootViewer.lua` upload parser.
 
-The top-level `g` table contains guild records. The compact `c.ui.window` table
-stores only the local `/lv` window size and position and is not guild data.
+The top-level `g` table contains guild records. The compact `c.ui` table stores
+the local `/lv` window state and global raid/dungeon view selection. The `a`
+table contains account settings. The `m` table contains account-wide dungeon
+history and is deliberately excluded from guild sync.
+
+`Pugs` is a reserved virtual raid-team definition (`team = "pugs"`). It is
+available account-wide but is not duplicated into any guild's `cfg.teams`.
+It always uses `#C5C6C7`, has no schedule or editable configuration, and its
+raid sessions, loot, and trades are omitted from both outgoing and incoming
+guild sync. Existing guild team definitions using the reserved ID are removed
+during normalization without deleting historical raids tagged with that ID.
+Pugs sessions may be started regardless of guild authority. The account-wide
+`a.autoPugRaids` preference optionally starts one after entering current-tier,
+non-Raid-Finder raid content outside all configured team schedule windows.
+
+```lua
+{
+  v = 2,
+  a = { dungeonLogging = false, autoPugRaids = false },
+  c = {
+    ui = {
+      context = "raid:midnight-2",
+      window = {},
+      lootFilters = { raidMinDifficulty = "lfr", dungeonMinTrack = "champion" },
+    },
+  },
+  g = {},
+  m = {},
+}
+```
 
 ## Guild Key
 
@@ -19,26 +47,28 @@ us:sargeras:sanctimonious
 
 ```lua
 {
-  v = 1,
+  v = 2,
   cfg = {
     enabled = true,
     prompt = true,
     promptBefore = 60,
-    promptAfter = 60,
+    endGrace = 0,
     promptTimeout = 30,
     lateGrace = 10,
     authority = "assist",
     rankMin = 0,
     rankMax = 3,
     tradeRaid = true,
-    whisper = "bench",
-    seasonMode = "auto",
+    whisper = "standby",
+    pruneMode = "days:30",
     selectedTeam = "main",
     teams = {
       {
         id = "main",
         name = "Main",
-        tz = "EST",
+        tz = "central",
+        clock24 = false,
+        excludeSync = false,
         schedules = {
           { w = 3, h = 20, m = 0, d = 180 },
           { w = 5, h = 20, m = 0, d = 180 },
@@ -47,7 +77,9 @@ us:sargeras:sanctimonious
       {
         id = "altraid",
         name = "AltRaid",
-        tz = "EST",
+        tz = "eastern",
+        clock24 = true,
+        excludeSync = true,
         schedules = {
           { w = 7, h = 20, m = 0, d = 180 },
         },
@@ -76,6 +108,7 @@ us:sargeras:sanctimonious
   id = "r1",
   st = 1780000000,
   sst = 1780000400,
+  set = 1780011200,
   en = 1780007200,
   z = 1,
   iid = 9999,
@@ -103,15 +136,15 @@ us:sargeras:sanctimonious
 }
 ```
 
-`st` records when tracking began. For a scheduled raid, `sst` records the
-scheduled start in server time and is the anchor for `lateGrace`; inviting or
-starting tracking early does not consume the grace period. Ad-hoc sessions do
-not have `sst` and use their tracking start instead.
+`st` records when tracking began. For a scheduled raid, `sst` and `set` record
+the scheduled start and end instants. `sst` anchors `lateGrace`; inviting or
+starting tracking early does not consume the grace period. Tracking stops at
+`set` plus `endGrace`. Ad-hoc sessions do not have either scheduled timestamp.
 
-`seasonMode` is `"auto"` by default and can be set to a known season ID to
-override the tier used for scheduled prompts. New raid sessions store `sea` as
-a compact season ID. Records created by older addon versions are classified on
-read from their instance ID/name and, as a final fallback, their start date.
+The global season/content selector controls which tier is eligible for
+scheduled prompts. New raid sessions store `sea` as a compact season ID.
+Records created by older addon versions are classified on read from their
+instance ID/name and, as a final fallback, their start date.
 
 ## Loot Event
 
@@ -155,3 +188,51 @@ read from their instance ID/name and, as a final fallback, their start date.
   by = 1,
 }
 ```
+
+`src = "manual"` identifies a trade entered from Loot History and `by` stores
+the character that entered it. Trade-window captures use `src = "observed"`;
+the Trades view labels those records as `Detected`.
+
+## Dungeon Record
+
+Dungeon history is account-wide and not guild-scoped. Names remain raw
+character names; mains, alts, and pugs are not inferred. Its dictionaries use
+the same compact `n` (name), `i` (item), and `s` (string) convention.
+
+```lua
+{
+  v = 2,
+  d = { n = {}, i = {}, s = {} },
+  r = {
+    {
+      id = "m1", sea = "midnight-2", cm = 999, iid = 9999,
+      z = 1, did = 8, lvl = 10, st = 1780000000, en = 1780001800,
+      dur = 1740000, timed = 1, up = 1, p = { 1, 2, 3, 4, 5 },
+    },
+  },
+  l = {
+    {
+      id = "ml1", run = "m1", sea = "midnight-2", ts = 1780001810,
+      p = 1, o = 2, item = 1, itemID = 19019, q = 1,
+      src = "end", track = "hero", tr = "mt1",
+    },
+  },
+  b = {
+    {
+      id = "mb1", run = "m1", sea = "midnight-2", ts = 1780001820,
+      p = 1, spec = 102, ok = 1, item = 2, itemID = 19020,
+    },
+  },
+  t = {
+    {
+      id = "mt1", run = "m1", ts = 1780001900,
+      f = 1, to = 2, item = 1, itemID = 19019, loot = "ml1",
+    },
+  },
+}
+```
+
+`track` is `champion` for level 0-5 dungeon gear, `hero` for level 6-10,
+and `myth` only for gear returned by `BONUS_ROLL_RESULT`. Bonus records retain
+`spec`, the event's loot-specialization ID, so the per-dungeon/spec knockout
+history can be reconstructed.

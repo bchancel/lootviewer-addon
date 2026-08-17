@@ -252,6 +252,13 @@ local function addIconLine(icon, width, height, point, x, y, rotation)
     icon.lines[#icon.lines + 1] = line
 end
 
+local function addOutlineSquare(icon, x, y, size)
+    addIconLine(icon, size, 1, "TOPLEFT", x, y)
+    addIconLine(icon, size, 1, "TOPLEFT", x, y - size + 1)
+    addIconLine(icon, 1, size, "TOPLEFT", x, y)
+    addIconLine(icon, 1, size, "TOPLEFT", x + size - 1, y)
+end
+
 local function setActionIconColor(button, color)
     local icon = button and button._lvActionIcon
     for _, line in ipairs(icon and icon.lines or {}) do
@@ -270,7 +277,11 @@ function LV.Widgets:IconButton(parent, kind, width, height, onClick)
     icon:SetPoint("CENTER")
     icon.lines = {}
 
-    if kind == "trash" then
+    if kind == "copy" then
+        -- Matches PopAuras' overlapping-outline duplicate icon.
+        addOutlineSquare(icon, 2, -2, 8)
+        addOutlineSquare(icon, 6, -6, 8)
+    elseif kind == "trash" then
         -- Matches the line-art trash icon used by PopAuras.
         addIconLine(icon, 8, 1, "TOPLEFT", 4, -4)
         addIconLine(icon, 4, 1, "TOPLEFT", 6, -2)
@@ -285,6 +296,13 @@ function LV.Widgets:IconButton(parent, kind, width, height, onClick)
         icon.texture:SetSize(18, 18)
         icon.texture:SetPoint("CENTER")
         icon.texture:SetTexture("Interface\\Icons\\INV_Feather_01")
+        icon.texture:SetTexCoord(0.10, 0.90, 0.10, 0.90)
+        icon.texture:SetDesaturated(true)
+    elseif kind == "gear" then
+        icon.texture = icon:CreateTexture(nil, "OVERLAY")
+        icon.texture:SetSize(18, 18)
+        icon.texture:SetPoint("CENTER")
+        icon.texture:SetTexture("Interface\\Icons\\INV_Misc_Gear_01")
         icon.texture:SetTexCoord(0.10, 0.90, 0.10, 0.90)
         icon.texture:SetDesaturated(true)
     elseif kind == "exclude" then
@@ -308,7 +326,7 @@ function LV.Widgets:IconButton(parent, kind, width, height, onClick)
     local normalColor = colors.textSecondary
     if kind == "trash" or kind == "exclude" then
         normalColor = colors.dangerBorder
-    elseif kind == "edit" then
+    elseif kind == "edit" or kind == "gear" then
         normalColor = colors.accentBright
     end
     setActionIconColor(button, normalColor)
@@ -391,8 +409,18 @@ function LV.Widgets:Check(parent, text, onChanged)
             checked and colors.accentSoft or colors.surfaceHover,
             checked and colors.accentBright or colors.borderFocus
         )
+        if self.tooltip then
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            GameTooltip:SetText(self.tooltip)
+            GameTooltip:Show()
+        end
     end)
-    check:SetScript("OnLeave", updateToggle)
+    check:SetScript("OnLeave", function(self)
+        updateToggle(self)
+        if self.tooltip then
+            GameTooltip:Hide()
+        end
+    end)
     check:SetScript("OnShow", updateToggle)
     updateToggle(check)
     return track(parent, check)
@@ -478,7 +506,7 @@ function LV.Widgets:CycleButton(parent, values, getValue, setValue, width)
     return button
 end
 
-function LV.Widgets:Dropdown(parent, values, getValue, setValue, width)
+function LV.Widgets:Dropdown(parent, values, getValue, setValue, width, maxVisible)
     local button = self:Button(parent, "", width or 120, 28)
     button.text:ClearAllPoints()
     button.text:SetPoint("LEFT", 10, 0)
@@ -508,18 +536,37 @@ function LV.Widgets:Dropdown(parent, values, getValue, setValue, width)
         button.text:SetText(labelFor(getValue()))
     end
 
+    maxVisible = math.max(1, math.floor(tonumber(maxVisible) or #values))
+    local rowParent = button.menu
+    local scrollContent
+    if #values > maxVisible then
+        local scroll = CreateFrame("ScrollFrame", nil, button.menu, "UIPanelScrollFrameTemplate")
+        scroll:SetPoint("TOPLEFT", 2, -2)
+        scroll:SetPoint("BOTTOMRIGHT", -2, 2)
+        scrollContent = CreateFrame("Frame", nil, scroll)
+        scrollContent:SetSize(math.max(1, (width or 120) - 24), #values * 24)
+        scroll:SetScrollChild(scrollContent)
+        scroll:EnableMouseWheel(true)
+        scroll:SetScript("OnMouseWheel", function(self, delta)
+            local nextValue = self:GetVerticalScroll() - ((tonumber(delta) or 0) * 48)
+            self:SetVerticalScroll(math.max(0, math.min(nextValue, self:GetVerticalScrollRange())))
+        end)
+        rowParent = scrollContent
+        button.menu.scroll = scroll
+    end
+
     for index, item in ipairs(values) do
         local itemValue = item.value
-        local row = self:Button(button.menu, item.label, width or 120, 24, function()
+        local row = self:Button(rowParent, item.label, width or 120, 24, function()
             setValue(itemValue)
             button.menu:Hide()
             refresh()
         end, "ghost")
         row:SetPoint("TOPLEFT", 0, -((index - 1) * 24))
-        row:SetPoint("RIGHT", 0, 0)
+        row:SetPoint("RIGHT", #values > maxVisible and -20 or 0, 0)
     end
 
-    button.menu:SetHeight(math.max(1, #values) * 24)
+    button.menu:SetHeight(math.max(1, math.min(#values, maxVisible)) * 24 + (#values > maxVisible and 4 or 0))
     button:SetScript("OnClick", function()
         if button.menu:IsShown() then
             button.menu:Hide()

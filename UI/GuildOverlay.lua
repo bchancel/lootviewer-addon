@@ -254,28 +254,28 @@ function LV.GuildOverlay:Ensure()
     here:SetPoint("BOTTOMLEFT", 10, 10)
     frame.here = here
 
-    local bench = LV.Widgets:Button(frame, "Bench", 58, 24, function()
+    local bench = LV.Widgets:Button(frame, "Standby", 66, 24, function()
         LV.GuildOverlay:Mark("bench")
     end)
-    bench:SetPoint("LEFT", here, "RIGHT", 6, 0)
+    bench:SetPoint("LEFT", here, "RIGHT", 4, 0)
     frame.bench = bench
 
     local late = LV.Widgets:Button(frame, "Late", 50, 24, function()
         LV.GuildOverlay:Mark("late")
     end)
-    late:SetPoint("LEFT", bench, "RIGHT", 6, 0)
+    late:SetPoint("LEFT", bench, "RIGHT", 4, 0)
     frame.late = late
 
     local out = LV.Widgets:Button(frame, "Out", 46, 24, function()
         LV.GuildOverlay:Mark("out")
     end)
-    out:SetPoint("LEFT", late, "RIGHT", 6, 0)
+    out:SetPoint("LEFT", late, "RIGHT", 4, 0)
     frame.out = out
 
     local noshow = LV.Widgets:Button(frame, "NoShow", 70, 24, function()
         LV.GuildOverlay:Mark("noshow")
     end)
-    noshow:SetPoint("LEFT", out, "RIGHT", 6, 0)
+    noshow:SetPoint("LEFT", out, "RIGHT", 4, 0)
     frame.noshow = noshow
 
     frame.buttons = { here, bench, late, out, noshow }
@@ -300,7 +300,7 @@ function LV.GuildOverlay:AttendanceStatus(session, guildKey, fullName)
         return "noshow"
     end
     if session.b and session.b[nameID] then
-        return "benched"
+        return "standby"
     end
     if session.late and session.late[nameID] then
         return "late"

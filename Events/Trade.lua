@@ -18,6 +18,44 @@ local function tradeTargetName()
     return ""
 end
 
+local function lootEventByID(record, lootID)
+    if not lootID then
+        return nil
+    end
+    for _, row in ipairs((record and record.l) or {}) do
+        if type(row) == "table" and tostring(row.id or "") == tostring(lootID) then
+            return row
+        end
+    end
+    return nil
+end
+
+local function finalLootOwner(record, lootRow)
+    local owner = lootRow and lootRow.p
+    local trades = {}
+    for _, trade in ipairs((record and record.t) or {}) do
+        if type(trade) == "table" then
+            trades[#trades + 1] = trade
+        end
+    end
+    table.sort(trades, function(a, b)
+        return (tonumber(a.ts) or 0) < (tonumber(b.ts) or 0)
+    end)
+    local lastTrade = tonumber(lootRow and lootRow.ts) or 0
+    for _, trade in ipairs(trades) do
+        local timestamp = tonumber(trade.ts) or 0
+        local direct = lootRow and tostring(trade.loot or "") == tostring(lootRow.id or "")
+        local chained = trade.f == owner and lootRow and trade.item == lootRow.item
+            and timestamp >= lastTrade
+            and timestamp <= ((tonumber(lootRow.ts) or timestamp) + LV.Constants.TRADE_WINDOW_SECONDS)
+        if direct or chained then
+            owner = trade.to or owner
+            lastTrade = timestamp
+        end
+    end
+    return owner
+end
+
 function LV.Trade:Begin()
     self.active = {
         target = tradeTargetName(),
@@ -89,7 +127,16 @@ function LV.Trade:RecordActiveTrade()
     end
 
     for _, itemLink in ipairs(trade.playerItems) do
+        if LV.Dungeons and LV.Dungeons.RecordTrade then
+            LV.Dungeons:RecordTrade(player, target, itemLink, "observed")
+        end
         self:RecordTrade(player, target, itemLink, "observed")
+    end
+    for _, itemLink in ipairs(trade.targetItems) do
+        if LV.Dungeons and LV.Dungeons.RecordTrade then
+            LV.Dungeons:RecordTrade(target, player, itemLink, "observed")
+        end
+        self:RecordTrade(target, player, itemLink, "observed")
     end
     trade.recorded = true
 end
@@ -113,8 +160,8 @@ function LV.Trade:Close()
     self.active = nil
 end
 
-function LV.Trade:RecordTrade(fromName, toName, itemLink, source, remoteTS, remoteBy)
-    local guildKey = LV.Guild:CurrentKey()
+function LV.Trade:RecordTrade(fromName, toName, itemLink, source, remoteTS, remoteBy, sourceLootID, guildKeyOverride, receivedRemote)
+    local guildKey = guildKeyOverride or LV.Guild:CurrentKey()
     if not guildKey then
         return nil
     end
@@ -123,7 +170,8 @@ function LV.Trade:RecordTrade(fromName, toName, itemLink, source, remoteTS, remo
     toName = LV.Loot:NormalizePlayerName(toName)
     local record = LV.Store:GuildRecord(guildKey)
     local timestamp = tonumber(remoteTS) or LV.Util:Now()
-    local sourceLoot = LV.Loot:FindTradeSource(guildKey, fromName, itemLink, timestamp)
+    local sourceLoot = lootEventByID(record, sourceLootID)
+        or LV.Loot:FindTradeSource(guildKey, fromName, itemLink, timestamp)
     local session = LV.Raid:GetActiveSession()
     if not session and not sourceLoot then
         return nil
@@ -132,7 +180,7 @@ function LV.Trade:RecordTrade(fromName, toName, itemLink, source, remoteTS, remo
     local row = {
         id = LV.Store:NewID(record, "trade", "t"),
         ts = timestamp,
-        sid = session and session.id or sourceLoot.sid,
+        sid = sourceLoot and sourceLoot.sid or session.id,
         f = LV.Store:NameID(guildKey, fromName),
         to = LV.Store:NameID(guildKey, toName),
         item = LV.Store:ItemID(guildKey, itemLink),
@@ -148,10 +196,24 @@ function LV.Trade:RecordTrade(fromName, toName, itemLink, source, remoteTS, remo
         sourceLoot.tr = row.id
     end
 
-    if source ~= "remote" then
+    if not receivedRemote and source ~= "remote" then
         LV:Print("Recorded trade: " .. LV.Util:ShortName(fromName) .. " -> " .. LV.Util:ShortName(toName) .. " " .. tostring(itemLink or "item") .. ".")
-        LV.Comms:AnnounceTrade(fromName, itemLink, toName)
-        LV.Comms:Send("T", { guildKey, timestamp, fromName, toName, LV.Util:ItemKey(itemLink), row.loot or "" })
+        if LV.Guild:CurrentKey() == guildKey then
+            LV.Comms:AnnounceTrade(fromName, itemLink, toName)
+            if not LV.Store:IsRaidExcludedFromSync(guildKey, row.sid) then
+                local initiatedBy = LV.Store:DictionaryValue(guildKey, "n", row.by)
+                LV.Comms:Send("T", {
+                    guildKey,
+                    timestamp,
+                    fromName,
+                    toName,
+                    LV.Util:ItemKey(itemLink),
+                    row.loot or "",
+                    row.src or "observed",
+                    initiatedBy,
+                })
+            end
+        end
     end
 
     if LV.UI and LV.UI.Refresh then
@@ -159,6 +221,34 @@ function LV.Trade:RecordTrade(fromName, toName, itemLink, source, remoteTS, remo
     end
 
     return row
+end
+
+function LV.Trade:RecordManualTrade(guildKey, lootRow, recipientID)
+    local record = guildKey and LV.Store:GuildRecord(guildKey) or nil
+    if type(record) ~= "table" or type(lootRow) ~= "table" then
+        return nil
+    end
+    local sourceLoot = lootEventByID(record, lootRow.id)
+    if sourceLoot ~= lootRow then
+        LV:Print("LootViewer could not find that loot event.")
+        return nil
+    end
+
+    recipientID = tonumber(recipientID)
+    local ownerID = finalLootOwner(record, lootRow)
+    local fromName = LV.Store:DictionaryValue(guildKey, "n", ownerID)
+    local toName = LV.Store:DictionaryValue(guildKey, "n", recipientID)
+    if fromName == "" or toName == "" then
+        LV:Print("Choose a raid member to receive the item.")
+        return nil
+    end
+    if ownerID == recipientID then
+        LV:Print(LV.Util:ShortName(toName) .. " already owns that item.")
+        return nil
+    end
+
+    local itemKey = LV.Store:DictionaryValue(guildKey, "i", lootRow.item)
+    return self:RecordTrade(fromName, toName, itemKey, "manual", nil, nil, lootRow.id, guildKey)
 end
 
 function LV.Trade:ObserveRemoteTrade(parts, sender)
@@ -175,7 +265,9 @@ function LV.Trade:ObserveRemoteTrade(parts, sender)
         return
     end
 
-    self:RecordTrade(fromName, toName, itemKey, "remote", ts, sender)
+    local source = parts[8] == "manual" and "manual" or "observed"
+    local initiatedBy = LV.Util:Trim(parts[9]) ~= "" and parts[9] or sender
+    self:RecordTrade(fromName, toName, itemKey, source, ts, initiatedBy, parts[7], nil, true)
 end
 
 LV:RegisterEvent("TRADE_SHOW", function()

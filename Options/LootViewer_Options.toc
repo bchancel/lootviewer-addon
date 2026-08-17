@@ -1,0 +1,9 @@
+## Interface: 120100, 120007
+## Title: LootViewer Options
+## Notes: On-demand configuration panel for LootViewer.
+## Author: LootViewer
+## Version: 12.1.2
+## Dependencies: LootViewer
+## LoadOnDemand: 1
+
+Configuration.lua

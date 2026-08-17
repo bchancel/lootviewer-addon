@@ -6,6 +6,8 @@ LV.modules.Raid = LV.Raid
 LV.Raid.prompted = {}
 LV.Raid.latePrompted = {}
 LV.Raid.adHocTimers = {}
+LV.Raid.scheduledEndTimers = {}
+LV.Raid.autoPugSignature = nil
 
 local function listKeys(map)
     local out = {}
@@ -32,24 +34,8 @@ local function isGuildRaidGroup()
     return ok and inGuildParty and true or false
 end
 
-local function serverWeekMinute()
-    local current = nil
-    if C_DateAndTime and C_DateAndTime.GetCurrentCalendarTime then
-        local ok, value = pcall(C_DateAndTime.GetCurrentCalendarTime)
-        if ok and type(value) == "table" then
-            current = value
-        end
-    end
-
-    if current and current.weekday then
-        local weekday = tonumber(current.weekday) or 1
-        local hour = tonumber(current.hour) or 0
-        local minute = tonumber(current.minute) or 0
-        return ((weekday - 1) * 24 * 60) + (hour * 60) + minute
-    end
-
-    local localNow = date("*t", LV.Util:Now())
-    return ((localNow.wday - 1) * 24 * 60) + (localNow.hour * 60) + localNow.min
+local function teamWeekMinute(team)
+    return LV.Util:TimezoneWeekMinute(team and team.tz or "realm", LV.Util:ServerNow())
 end
 
 local function inWeeklyWindow(nowMinute, startMinute, beforeMinutes, durationMinutes, afterMinutes)
@@ -102,11 +88,10 @@ function LV.Raid:FindActiveSchedule(cfg, now, teamID)
     end
 
     local before = tonumber(cfg.promptBefore) or 60
-    local after = tonumber(cfg.promptAfter) or 60
-    local currentMinute = serverWeekMinute()
-
+    local after = tonumber(cfg.endGrace) or 0
     for teamIndex, team in ipairs(cfg.teams) do
         if not teamID or tostring(team.id) == tostring(teamID) then
+            local currentMinute = teamWeekMinute(team)
             for slotIndex, slot in ipairs(team.schedules or {}) do
                 local weekday = tonumber(slot.w)
                 local hour = tonumber(slot.h) or 20
@@ -125,6 +110,30 @@ function LV.Raid:FindActiveSchedule(cfg, now, teamID)
     end
 
     return nil
+end
+
+function LV.Raid:IsWithinRaidHours(cfg)
+    if not cfg or type(cfg.teams) ~= "table" then
+        return false
+    end
+
+    local after = tonumber(cfg.endGrace) or 0
+    for _, team in ipairs(cfg.teams) do
+        local currentMinute = teamWeekMinute(team)
+        for _, slot in ipairs(team.schedules or {}) do
+            local weekday = tonumber(slot.w)
+            local hour = tonumber(slot.h) or 20
+            local minute = tonumber(slot.m) or 0
+            local duration = tonumber(slot.d) or 180
+            if weekday then
+                local startMinute = ((weekday - 1) * 24 * 60) + (hour * 60) + minute
+                if inWeeklyWindow(currentMinute, startMinute, 0, duration, after) then
+                    return true
+                end
+            end
+        end
+    end
+    return false
 end
 
 function LV.Raid:ShouldPrompt()
@@ -181,6 +190,64 @@ function LV.Raid:MaybePrompt()
     end
 end
 
+function LV.Raid:MaybeAutoStartPug()
+    local active = self:GetActiveSession()
+    if active and active.autoPug then
+        if not IsInRaid() or not LV.Util:InRaidInstance() then
+            self.autoPugSignature = nil
+            self:EndSession("left_pug_raid")
+            return false
+        end
+        return true
+    end
+
+    if not IsInRaid() or not LV.Util:InRaidInstance() then
+        self.autoPugSignature = nil
+        return false
+    end
+    if active then
+        return false
+    end
+
+    local account = LV.Store:AccountConfig()
+    if not account or account.autoPugRaids ~= true then
+        return false
+    end
+
+    local guildInfo = LV.Guild:CurrentInfo()
+    if not guildInfo then
+        return false
+    end
+    local cfg = LV.Store:GetConfig(guildInfo.key)
+    if not cfg or cfg.enabled == false or self:IsWithinRaidHours(cfg) then
+        return false
+    end
+
+    local instance = LV.Util:CurrentInstance()
+    if instance.instanceType ~= "raid" or tonumber(instance.difficultyID) == 17 then
+        return false
+    end
+    local instanceSeason = LV.Seasons:InstanceSeasonID(instance.instanceID, instance.name)
+    if not instanceSeason or instanceSeason ~= LV.Seasons:TrackingSeasonID(cfg) then
+        return false
+    end
+
+    local signature = table.concat({
+        tostring(guildInfo.key),
+        tostring(instance.instanceID),
+        tostring(instance.difficultyID),
+    }, ":")
+    if self.autoPugSignature == signature then
+        return false
+    end
+    self.autoPugSignature = signature
+    return self:StartSession("auto_pug", LV.Constants.PUG_TEAM_ID, {
+        adhoc = true,
+        autoPug = true,
+        noTimeout = true,
+    }) ~= nil
+end
+
 function LV.Raid:StartSession(reason, teamID, options)
     local guildInfo = LV.Guild:CurrentInfo()
     if not guildInfo then
@@ -188,7 +255,8 @@ function LV.Raid:StartSession(reason, teamID, options)
         return nil
     end
 
-    if not LV.Guild:CanModifySession() then
+    local isPugTeam = LV.Store:IsGlobalPugTeam(teamID)
+    if not isPugTeam and not LV.Guild:CanModifySession() then
         LV:Print("Your current LootViewer authority settings do not allow you to start a tracked raid.")
         return nil
     end
@@ -208,9 +276,11 @@ function LV.Raid:StartSession(reason, teamID, options)
     local instance = LV.Util:CurrentInstance()
     local team = LV.Store:GetTeamByID(record, teamID) or LV.Store:GetSelectedTeam(record)
     local scheduledStart = nil
+    local scheduledEnd = nil
     if team and not (type(options) == "table" and options.adhoc) then
-        local _, _, _, _, startMinute, _, currentMinute = self:FindActiveSchedule(record.cfg, nil, team.id)
+        local _, _, _, _, startMinute, endMinute, currentMinute = self:FindActiveSchedule(record.cfg, nil, team.id)
         scheduledStart = scheduledServerTimestamp(startMinute, currentMinute)
+        scheduledEnd = scheduledServerTimestamp(endMinute, currentMinute)
     end
     local raidID = LV.Store:NewID(record, "raid", "r")
     local playerID = LV.Store:NameID(guildInfo.key, LV.Util:PlayerFullName())
@@ -218,6 +288,7 @@ function LV.Raid:StartSession(reason, teamID, options)
         id = raidID,
         st = LV.Util:Now(),
         sst = scheduledStart,
+        set = scheduledEnd,
         en = LV.Util:Now(),
         z = LV.Store:StringID(guildInfo.key, instance.name),
         iid = instance.instanceID,
@@ -238,16 +309,26 @@ function LV.Raid:StartSession(reason, teamID, options)
     }
 
     if type(options) == "table" and options.adhoc then
-        local hours = normalizeAdHocHours(options.hours)
         session.adhoc = 1
-        session.adDur = math.floor(hours * 60)
-        session.adEnd = session.st + math.floor(hours * 60 * 60)
+        if options.autoPug then
+            session.autoPug = 1
+        end
+        if not options.noTimeout then
+            local hours = normalizeAdHocHours(options.hours)
+            session.adDur = math.floor(hours * 60)
+            session.adEnd = session.st + math.floor(hours * 60 * 60)
+        end
     end
 
     record.r[raidID] = session
     record.cur = raidID
     self:RecordRaidRoster("start")
-    LV.Comms:Send("S", { guildInfo.key, raidID, session.st, instance.instanceID, session.team })
+    if session.set then
+        self:ScheduleScheduledEnd(guildInfo.key, raidID, session.set + ((tonumber(record.cfg.endGrace) or 0) * 60))
+    end
+    if not LV.Store:IsTeamExcludedFromSync(guildInfo.key, session.team) then
+        LV.Comms:Send("S", { guildInfo.key, raidID, session.st, instance.instanceID, session.team })
+    end
     LV:Print("Tracking " .. (team and team.name or "Raid") .. " raid for " .. guildInfo.name .. ".")
 
     if LV.UI and LV.UI.Refresh then
@@ -290,6 +371,58 @@ function LV.Raid:ScheduleAdHocEnd(raidID, endAt)
     end)
 end
 
+function LV.Raid:ExpireScheduledSession(guildKey, raidID, endAt)
+    local record = LV.Store:GuildRecord(guildKey)
+    local session = record and record.r and record.r[raidID]
+    if not record or record.cur ~= raidID or type(session) ~= "table" then
+        return false
+    end
+
+    session.en = tonumber(endAt) or LV.Util:Now()
+    session.endReason = "scheduled_end"
+    record.cur = nil
+    self.scheduledEndTimers[tostring(guildKey) .. ":" .. tostring(raidID)] = nil
+    if LV.Guild:CurrentKey() == guildKey and not LV.Store:IsRaidExcludedFromSync(guildKey, session) then
+        LV.Comms:Send("E", { guildKey, session.id, session.en })
+    end
+    LV:Print("Scheduled raid tracking ended.")
+    if LV.UI and LV.UI.Refresh then
+        LV.UI:Refresh()
+    end
+    return true
+end
+
+function LV.Raid:ScheduleScheduledEnd(guildKey, raidID, endAt)
+    if not C_Timer or not C_Timer.After or not guildKey or not raidID then
+        return
+    end
+
+    endAt = tonumber(endAt)
+    if not endAt then
+        return
+    end
+    local key = tostring(guildKey) .. ":" .. tostring(raidID)
+    if self.scheduledEndTimers[key] == endAt then
+        return
+    end
+    self.scheduledEndTimers[key] = endAt
+    local delay = endAt - LV.Util:ServerNow()
+    if delay <= 0 then
+        self:ExpireScheduledSession(guildKey, raidID, endAt)
+        return
+    end
+
+    C_Timer.After(delay, function()
+        if LV.Raid.scheduledEndTimers[key] ~= endAt then
+            return
+        end
+        LV.Raid.scheduledEndTimers[key] = nil
+        if LV.Util:ServerNow() >= endAt then
+            LV.Raid:ExpireScheduledSession(guildKey, raidID, endAt)
+        end
+    end)
+end
+
 function LV.Raid:EndSession(reason)
     local guildInfo = LV.Guild:CurrentInfo()
     local session, record = self:GetActiveSession()
@@ -301,9 +434,12 @@ function LV.Raid:EndSession(reason)
     session.en = LV.Util:Now()
     session.endReason = reason or ""
     record.cur = nil
+    if guildInfo then
+        self.scheduledEndTimers[tostring(guildInfo.key) .. ":" .. tostring(session.id)] = nil
+    end
     LV:Print("Stopped tracking raid.")
 
-    if guildInfo then
+    if guildInfo and not LV.Store:IsRaidExcludedFromSync(guildInfo.key, session) then
         LV.Comms:Send("E", { guildInfo.key, session.id, session.en })
     end
 
@@ -371,17 +507,22 @@ function LV.Raid:ExtendMostRecentSession(hours)
     self:EnsureAttendanceMaps(session)
     session.en = now
     session.adEnd = endAt
+    session.set = nil
     session.adDur = math.max(tonumber(session.adDur) or 0, math.floor((endAt - (tonumber(session.st) or now)) / 60))
     session.endReason = nil
     session.lastBy = LV.Store:NameID(guildInfo.key, LV.Util:PlayerFullName())
     session.lastSource = "extend"
     record.cur = raidID
 
+    self.scheduledEndTimers[tostring(guildInfo.key) .. ":" .. tostring(raidID)] = nil
+
     self.adHocTimers[session.id] = nil
     self:ScheduleAdHocEnd(session.id, endAt)
 
     local instanceID = tonumber(session.iid) or 0
-    LV.Comms:Send("S", { guildInfo.key, session.id, tonumber(session.st) or now, instanceID, session.team })
+    if not LV.Store:IsTeamExcludedFromSync(guildInfo.key, session.team) then
+        LV.Comms:Send("S", { guildInfo.key, session.id, tonumber(session.st) or now, instanceID, session.team })
+    end
     LV:Print("Extended raid tracking by " .. tostring(extensionHours) .. " hour(s), until " .. date("%H:%M", endAt) .. ".")
 
     if LV.UI and LV.UI.Refresh then
@@ -406,6 +547,16 @@ function LV.Raid:GetActiveSession()
     self:EnsureAttendanceMaps(session)
 
     local lastSeen = tonumber(session.en) or tonumber(session.st) or 0
+    local scheduledEndAt = tonumber(session.set)
+    if scheduledEndAt then
+        local cfg = record.cfg or {}
+        scheduledEndAt = scheduledEndAt + ((tonumber(cfg.endGrace) or 0) * 60)
+        if LV.Util:ServerNow() >= scheduledEndAt then
+            self:ExpireScheduledSession(guildKey, raidID, scheduledEndAt)
+            return nil
+        end
+        self:ScheduleScheduledEnd(guildKey, raidID, scheduledEndAt)
+    end
     local adHocEnd = tonumber(session.adEnd)
     if adHocEnd and LV.Util:Now() >= adHocEnd then
         session.en = adHocEnd
@@ -637,7 +788,7 @@ function LV.Raid:HandleWhisper(message, sender)
     end
 
     self:MarkPlayerBench(sender, "whisper")
-    SendChatMessage("LootViewer marked you benched for tonight.", "WHISPER", nil, sender)
+    SendChatMessage("LootViewer marked you as standby for tonight.", "WHISPER", nil, sender)
 end
 
 StaticPopupDialogs[LV.Constants.TRACK_PROMPT] = {
@@ -654,6 +805,7 @@ StaticPopupDialogs[LV.Constants.TRACK_PROMPT] = {
 
 LV:RegisterEvent("PLAYER_ENTERING_WORLD", function()
     C_Timer.After(2, function()
+        LV.Raid:MaybeAutoStartPug()
         LV.Raid:MaybePrompt()
         LV.Raid:RecordRaidRoster("enter_world")
     end)
@@ -661,12 +813,14 @@ end)
 
 LV:RegisterEvent("ZONE_CHANGED_NEW_AREA", function()
     C_Timer.After(1, function()
+        LV.Raid:MaybeAutoStartPug()
         LV.Raid:MaybePrompt()
     end)
 end)
 
 LV:RegisterEvent("GROUP_ROSTER_UPDATE", function()
     C_Timer.After(1, function()
+        LV.Raid:MaybeAutoStartPug()
         LV.Raid:MaybePrompt()
         LV.Raid:RecordRaidRoster("roster")
     end)

@@ -1,7 +1,7 @@
 local addonName, LV = ...
 
 LV.name = addonName
-LV.version = "12.1.1"
+LV.version = "12.1.2"
 LV.frame = CreateFrame("Frame")
 LV.eventHandlers = {}
 LV.modules = {}
@@ -93,10 +93,11 @@ end)
 function LV:PrintHelp()
     self:Print("Commands:")
     self:Print("/lv - toggle LootViewer")
+    self:Print("/lv config - open the on-demand configuration panel")
     self:Print("/lv start - start tracking the current raid")
     self:Print("/lv stop - stop tracking the current raid")
     self:Print("/lv extend [hours] - reactivate and extend the most recent raid")
-    self:Print("/lv bench - mark yourself benched")
+    self:Print("/lv standby - mark yourself as standby")
     self:Print("/lv guild_set <guild> - use stored guild data for this session")
     self:Print("/lv guild_set clear - return to the character's actual guild")
     self:Print("/lv wipe_loot - wipe loot history for the active raid")
@@ -133,7 +134,7 @@ SlashCmdList.LOOTVIEWER = function(input)
         return
     end
 
-    if command == "bench" then
+    if command == "standby" or command == "bench" then
         LV.Raid:MarkPlayerBench(LV.Util:PlayerFullName(), "self")
         return
     end
@@ -159,6 +160,15 @@ SlashCmdList.LOOTVIEWER = function(input)
 
     if command == "debug_loot_window" then
         LV.Loot:DebugLootWindow(rest or "")
+        return
+    end
+
+    if command == "config" or command == "options" then
+        if LV.UI and LV.UI.OpenConfiguration then
+            LV.UI:OpenConfiguration()
+        else
+            LV:Print("UI is not loaded yet.")
+        end
         return
     end
 

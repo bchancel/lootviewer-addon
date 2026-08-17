@@ -20,10 +20,20 @@ local definitions = {
         id = "midnight-2",
         label = "Midnight Season 2",
         shortLabel = "Midnight S2",
-        startDate = 20260817,
+        startDate = 20260812,
         raids = {
             { name = "The Tidebound Grotto", instanceID = 2987 },
             { name = "The Venomous Abyss", instanceID = 3004 },
+        },
+        dungeons = {
+            { name = "Altar of Fangs" },
+            { name = "Den of Nalorakk" },
+            { name = "Murder Row" },
+            { name = "The Blinding Vale" },
+            { name = "Voidscar Arena" },
+            { name = "Kings' Rest" },
+            { name = "Ruby Life Pools" },
+            { name = "Temple of Sethraliss" },
         },
     },
 }
@@ -31,6 +41,7 @@ local definitions = {
 local definitionsByID = {}
 local seasonsByInstanceID = {}
 local seasonsByInstanceName = {}
+local dungeonSeasonsByName = {}
 
 local function normalizeInstanceName(value)
     value = LV.Util:Trim(value):lower()
@@ -45,6 +56,9 @@ for _, definition in ipairs(definitions) do
     for _, raid in ipairs(definition.raids or {}) do
         seasonsByInstanceID[tonumber(raid.instanceID) or 0] = definition.id
         seasonsByInstanceName[normalizeInstanceName(raid.name)] = definition.id
+    end
+    for _, dungeon in ipairs(definition.dungeons or {}) do
+        dungeonSeasonsByName[normalizeInstanceName(dungeon.name)] = definition.id
     end
 end
 
@@ -122,9 +136,14 @@ function LV.Seasons:SeasonIDForTimestamp(timestamp)
 end
 
 function LV.Seasons:TrackingSeasonID(cfg)
-    local configured = cfg and cfg.seasonMode
-    if self:IsSeasonID(configured) then
-        return configured
+    if LV.Store then
+        LV.Store:InitializeIfNeeded()
+        local character = LV.Store.db and LV.Store.db.c
+        local context = character and character.ui and character.ui.context
+        local _, contextSeasonID = tostring(context or ""):match("^(%a+):(.+)$")
+        if self:IsSeasonID(contextSeasonID) then
+            return contextSeasonID
+        end
     end
     return self:CurrentSeasonID()
 end
@@ -135,6 +154,69 @@ function LV.Seasons:InstanceSeasonID(instanceID, instanceName)
         return byID
     end
     return seasonsByInstanceName[normalizeInstanceName(instanceName)]
+end
+
+function LV.Seasons:DungeonSeasonID(instanceName, timestamp)
+    local byName = dungeonSeasonsByName[normalizeInstanceName(instanceName)]
+    if byName then
+        return byName
+    end
+    return self:SeasonIDForTimestamp(timestamp) or self:CurrentSeasonID()
+end
+
+function LV.Seasons:IsSeasonDungeon(seasonID, instanceName)
+    return dungeonSeasonsByName[normalizeInstanceName(instanceName)] == seasonID
+end
+
+function LV.Seasons:IsKnownDungeon(instanceName)
+    return dungeonSeasonsByName[normalizeInstanceName(instanceName)] ~= nil
+end
+
+function LV.Seasons:ContextValues(dungeonEnabled)
+    local values = {}
+    for index = #definitions, 1, -1 do
+        local definition = definitions[index]
+        values[#values + 1] = {
+            value = "raid:" .. definition.id,
+            label = definition.shortLabel .. " - Raids",
+        }
+        if dungeonEnabled and #(definition.dungeons or {}) > 0 then
+            values[#values + 1] = {
+                value = "dungeon:" .. definition.id,
+                label = definition.shortLabel .. " - Dungeons",
+            }
+        end
+    end
+    values[#values + 1] = { value = "raid:all", label = "All Seasons - Raids" }
+    if dungeonEnabled then
+        values[#values + 1] = { value = "dungeon:all", label = "All Seasons - Dungeons" }
+    end
+    return values
+end
+
+function LV.Seasons:DungeonFilterValues(seasonID)
+    seasonID = self:ResolveFilter(seasonID or "current")
+    local values = { { value = "all", label = "All" } }
+    local seen = {}
+
+    local function appendDefinition(definition)
+        for _, dungeon in ipairs((definition and definition.dungeons) or {}) do
+            local name = LV.Util:Trim(dungeon.name)
+            if name ~= "" and not seen[name] then
+                seen[name] = true
+                values[#values + 1] = { value = name, label = name }
+            end
+        end
+    end
+
+    if seasonID == "all" then
+        for index = #definitions, 1, -1 do
+            appendDefinition(definitions[index])
+        end
+    else
+        appendDefinition(self:Definition(seasonID))
+    end
+    return values
 end
 
 function LV.Seasons:RaidSeasonID(guildKey, raid)
@@ -196,17 +278,18 @@ function LV.Seasons:EventMatchesFilter(guildKey, record, row, filter)
     return self:EventSeasonID(guildKey, record, row) == filter
 end
 
-function LV.Seasons:RaidMatchesRange(guildKey, raid, range)
+function LV.Seasons:RaidMatchesRange(guildKey, raid, range, seasonFilter)
+    if not self:RaidMatchesFilter(guildKey, raid, seasonFilter or "current") then
+        return false
+    end
     if type(range) == "number" then
-        return self:RaidSeasonID(guildKey, raid) == self:CurrentSeasonID()
-            and (tonumber(raid and raid.st) or 0) >= LV.Util:Now() - (range * 30 * 86400)
+        return (tonumber(raid and raid.st) or 0) >= LV.Util:Now() - (range * 30 * 86400)
     end
 
     range = range or "months:3"
     local months = tonumber(tostring(range):match("^months:(%d+)$"))
     if months then
-        return self:RaidSeasonID(guildKey, raid) == self:CurrentSeasonID()
-            and (tonumber(raid and raid.st) or 0) >= LV.Util:Now() - (months * 30 * 86400)
+        return (tonumber(raid and raid.st) or 0) >= LV.Util:Now() - (months * 30 * 86400)
     end
 
     local seasonID = tostring(range):match("^season:(.+)$")
@@ -240,13 +323,7 @@ function LV.Seasons:MeterRangeValues()
             label = month == 1 and "Last 1 Month" or ("Last " .. tostring(month) .. " Months"),
         }
     end
-    for _, definition in ipairs(definitions) do
-        values[#values + 1] = {
-            value = "season:" .. definition.id,
-            label = definition.label,
-        }
-    end
-    values[#values + 1] = { value = "all", label = "All Seasons" }
+    values[#values + 1] = { value = "all", label = "Entire Selected Season" }
     return values
 end
 

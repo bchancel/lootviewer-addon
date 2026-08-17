@@ -6,6 +6,7 @@ LV.modules.DataSync = LV.DataSync
 local CHUNK_SIZE = 180
 local SEND_DELAY = 0.08
 local SYNC_WINDOW_SECONDS = 60 * 86400
+local EXCLUDED_REMOTE_RAID = {}
 
 local syncKinds = {
     Q = true,
@@ -34,6 +35,7 @@ local configBooleans = {
 local configNumbers = {
     promptBefore = true,
     promptAfter = true,
+    endGrace = true,
     promptTimeout = true,
     lateGrace = true,
     rankMin = true,
@@ -46,6 +48,7 @@ local configStrings = {
     whisper = true,
     selectedTeam = true,
     seasonMode = true,
+    pruneMode = true,
 }
 
 local function split(text, separator)
@@ -377,6 +380,30 @@ function LV.DataSync:BuildExport(guildKey)
     local record = LV.Store:GuildRecord(guildKey)
     local cutoff = LV.Util:Now() - SYNC_WINDOW_SECONDS
     local counts = { config = false, raids = 0, loot = 0, trades = 0 }
+    local excludedTeamIDs = { [LV.Constants.PUG_TEAM_ID] = true }
+    local includedTeams = {}
+    for _, team in ipairs((record.cfg and record.cfg.teams) or {}) do
+        if type(team) == "table" then
+            if team.excludeSync == true then
+                excludedTeamIDs[team.id] = true
+            else
+                includedTeams[#includedTeams + 1] = team
+            end
+        end
+    end
+    local excludedRaidIDs = {}
+    for raidID, raid in pairs((record and record.r) or {}) do
+        if type(raid) == "table" and excludedTeamIDs[raid.team or "main"] then
+            excludedRaidIDs[raidID] = true
+            if raid.id then excludedRaidIDs[raid.id] = true end
+        end
+    end
+    local excludedLootIDs = {}
+    for _, row in ipairs((record and record.l) or {}) do
+        if type(row) == "table" and excludedRaidIDs[row.sid] and row.id then
+            excludedLootIDs[row.id] = true
+        end
+    end
     local lines = {
         line("H", {
             { "v", 1 },
@@ -389,12 +416,17 @@ function LV.DataSync:BuildExport(guildKey)
 
     if type(record.cfg) == "table" then
         local cfg = record.cfg
+        local selectedTeam = cfg.selectedTeam
+        if excludedTeamIDs[selectedTeam] then
+            selectedTeam = includedTeams[1] and includedTeams[1].id or "main"
+        end
         counts.config = true
         lines[#lines + 1] = line("CFG", {
             { "enabled", boolString(cfg.enabled) },
             { "prompt", boolString(cfg.prompt) },
             { "promptBefore", cfg.promptBefore },
             { "promptAfter", cfg.promptAfter },
+            { "endGrace", cfg.endGrace },
             { "promptTimeout", cfg.promptTimeout },
             { "lateGrace", cfg.lateGrace },
             { "authority", cfg.authority },
@@ -402,18 +434,20 @@ function LV.DataSync:BuildExport(guildKey)
             { "rankMax", cfg.rankMax },
             { "tradeRaid", boolString(cfg.tradeRaid) },
             { "whisper", cfg.whisper },
-            { "selectedTeam", cfg.selectedTeam },
+            { "selectedTeam", selectedTeam },
             { "seasonMode", cfg.seasonMode },
+            { "pruneMode", cfg.pruneMode },
             { "pruneDays", cfg.pruneDays },
         })
 
-        for _, team in ipairs(cfg.teams or {}) do
+        for _, team in ipairs(includedTeams) do
             if type(team) == "table" then
                 local color = LV.Store:NormalizeTeamColor(team.color)
                 lines[#lines + 1] = line("TEAM", {
                     { "id", team.id },
                     { "name", team.name },
                     { "tz", team.tz },
+                    { "clock24", boolString(team.clock24) },
                     { "cr", numString(color.r) },
                     { "cg", numString(color.g) },
                     { "cb", numString(color.b) },
@@ -437,7 +471,7 @@ function LV.DataSync:BuildExport(guildKey)
 
     local raids = {}
     for raidID, raid in pairs((record and record.r) or {}) do
-        if type(raid) == "table" and (tonumber(raid.st) or 0) >= cutoff then
+        if type(raid) == "table" and not excludedRaidIDs[raidID] and (tonumber(raid.st) or 0) >= cutoff then
             raids[#raids + 1] = raid
             raid.id = raid.id or raidID
         end
@@ -450,6 +484,7 @@ function LV.DataSync:BuildExport(guildKey)
             { "id", raid.id },
             { "st", raid.st },
             { "sst", raid.sst },
+            { "set", raid.set },
             { "en", raid.en },
             { "z", stringForID(guildKey, raid.z) },
             { "iid", raid.iid },
@@ -489,7 +524,7 @@ function LV.DataSync:BuildExport(guildKey)
 
     local lootRows = {}
     for _, row in ipairs((record and record.l) or {}) do
-        if type(row) == "table" and (tonumber(row.ts) or 0) >= cutoff then
+        if type(row) == "table" and not excludedRaidIDs[row.sid] and (tonumber(row.ts) or 0) >= cutoff then
             lootRows[#lootRows + 1] = row
         end
     end
@@ -525,7 +560,8 @@ function LV.DataSync:BuildExport(guildKey)
 
     local tradeRows = {}
     for _, row in ipairs((record and record.t) or {}) do
-        if type(row) == "table" and (tonumber(row.ts) or 0) >= cutoff then
+        if type(row) == "table" and not excludedRaidIDs[row.sid] and not excludedLootIDs[row.loot]
+            and (tonumber(row.ts) or 0) >= cutoff then
             tradeRows[#tradeRows + 1] = row
         end
     end
@@ -760,6 +796,17 @@ function LV.DataSync:ImportStatusList(guildKey, raid, status, value)
 end
 
 function LV.DataSync:ImportRaid(guildKey, record, sender, fields, remoteRaidMap)
+    local incomingTeamID = fields.team ~= "" and fields.team or "main"
+    if LV.Store:IsGlobalPugTeam(incomingTeamID) then
+        remoteRaidMap[fields.id] = EXCLUDED_REMOTE_RAID
+        return false, true
+    end
+    local localTeam = LV.Store:GetTeamByID(record, incomingTeamID)
+    if localTeam and localTeam.excludeSync == true then
+        remoteRaidMap[fields.id] = EXCLUDED_REMOTE_RAID
+        return false, true
+    end
+
     local raidID, raid, knownRemote = self:FindRaid(record, sender, fields.id, fields.st, fields.team, fields.iid)
     local created = false
 
@@ -769,6 +816,7 @@ function LV.DataSync:ImportRaid(guildKey, record, sender, fields, remoteRaidMap)
             id = raidID,
             st = tonumber(fields.st) or LV.Util:Now(),
             sst = tonumber(fields.sst),
+            set = tonumber(fields.set),
             en = tonumber(fields.en) or tonumber(fields.st) or LV.Util:Now(),
             z = LV.Store:StringID(guildKey, fields.z or ""),
             iid = tonumber(fields.iid) or 0,
@@ -798,6 +846,7 @@ function LV.DataSync:ImportRaid(guildKey, record, sender, fields, remoteRaidMap)
         ensureRaidMaps(raid)
         raid.en = math.max(tonumber(raid.en) or 0, tonumber(fields.en) or 0)
         raid.sst = raid.sst or tonumber(fields.sst)
+        raid.set = raid.set or tonumber(fields.set)
         raid.z = raid.z or LV.Store:StringID(guildKey, fields.z or "")
         raid.diff = raid.diff or LV.Store:StringID(guildKey, fields.diff or "")
         raid.sea = raid.sea or (LV.Seasons:IsSeasonID(fields.sea) and fields.sea or nil)
@@ -875,6 +924,10 @@ function LV.DataSync:FindLoot(record, sender, remoteID, playerID, itemKeyID, ite
 end
 
 function LV.DataSync:ImportLoot(guildKey, record, sender, fields, remoteRaidMap, remoteLootMap)
+    if remoteRaidMap[fields.sid] == EXCLUDED_REMOTE_RAID then
+        return false, true
+    end
+
     local fullName = normalizedName(fields.p)
     local itemKey = LV.Util:ItemKey(fields.item or "")
     if fullName == "" or itemKey == "" then
@@ -1002,6 +1055,10 @@ function LV.DataSync:LootByID(record, lootID)
 end
 
 function LV.DataSync:ImportTrade(guildKey, record, sender, fields, remoteRaidMap, remoteLootMap)
+    if remoteRaidMap[fields.sid] == EXCLUDED_REMOTE_RAID then
+        return false, true
+    end
+
     local fromName = normalizedName(fields.f)
     local toName = normalizedName(fields.to)
     local itemKey = LV.Util:ItemKey(fields.item or "")
@@ -1051,6 +1108,7 @@ function LV.DataSync:ImportConfig(record, fields, configState)
 
     record.cfg = record.cfg or {}
     local cfg = record.cfg
+    local originalSelectedTeam = cfg.selectedTeam
     for key, _ in pairs(configBooleans) do
         if fields[key] ~= nil then
             cfg[key] = parseBool(fields[key])
@@ -1067,11 +1125,23 @@ function LV.DataSync:ImportConfig(record, fields, configState)
         end
     end
 
-    cfg.teams = {}
+    local preservedTeams = {}
+    local preservedTeamIDs = {}
+    for _, team in ipairs(cfg.teams or {}) do
+        if type(team) == "table" and team.excludeSync == true then
+            preservedTeams[#preservedTeams + 1] = team
+            preservedTeamIDs[team.id] = true
+        end
+    end
+    if preservedTeamIDs[originalSelectedTeam] then
+        cfg.selectedTeam = originalSelectedTeam
+    end
+    cfg.teams = preservedTeams
     cfg.schedules = nil
     cfg._teamsMigrated = 1
     configState.seen = true
     configState.teamsByID = {}
+    configState.preservedTeamIDs = preservedTeamIDs
     configState.selectedTeam = cfg.selectedTeam
     return true
 end
@@ -1086,11 +1156,18 @@ function LV.DataSync:ImportConfigTeam(record, fields, configState)
     if teamID == "" then
         teamID = "team-" .. tostring(#(cfg.teams or {}) + 1)
     end
+    if LV.Store:IsGlobalPugTeam(teamID) then
+        return false
+    end
+    if configState.preservedTeamIDs and configState.preservedTeamIDs[teamID] then
+        return false
+    end
 
     local team = {
         id = teamID,
         name = LV.Util:Trim(fields.name) ~= "" and LV.Util:Trim(fields.name) or teamID,
-        tz = LV.Util:Trim(fields.tz) ~= "" and LV.Util:Trim(fields.tz) or "local",
+        tz = LV.Util:NormalizeTimezone(fields.tz),
+        clock24 = parseBool(fields.clock24),
         color = LV.Store:NormalizeTeamColor({
             r = fields.cr,
             g = fields.cg,

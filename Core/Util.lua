@@ -108,6 +108,121 @@ function LV.Util:ServerNow()
     return self:Now()
 end
 
+local TIME_ZONES = {
+    realm = { label = "Realm / Server" },
+    eastern = { label = "Eastern (ET)", standardOffset = -5 * 60, dst = true },
+    central = { label = "Central (CT)", standardOffset = -6 * 60, dst = true },
+    mountain = { label = "Mountain (MT)", standardOffset = -7 * 60, dst = true },
+    pacific = { label = "Pacific (PT)", standardOffset = -8 * 60, dst = true },
+    utc = { label = "UTC", standardOffset = 0 },
+}
+
+local TIME_ZONE_VALUES = {
+    { value = "realm", label = TIME_ZONES.realm.label },
+    { value = "eastern", label = TIME_ZONES.eastern.label },
+    { value = "central", label = TIME_ZONES.central.label },
+    { value = "mountain", label = TIME_ZONES.mountain.label },
+    { value = "pacific", label = TIME_ZONES.pacific.label },
+    { value = "utc", label = TIME_ZONES.utc.label },
+}
+
+local TIME_ZONE_ALIASES = {
+    ["local"] = "realm",
+    ["server"] = "realm",
+    ["realm / server"] = "realm",
+    ["et"] = "eastern",
+    ["est"] = "eastern",
+    ["edt"] = "eastern",
+    ["ct"] = "central",
+    ["cst"] = "central",
+    ["cdt"] = "central",
+    ["mt"] = "mountain",
+    ["mst"] = "mountain",
+    ["mdt"] = "mountain",
+    ["pt"] = "pacific",
+    ["pst"] = "pacific",
+    ["pdt"] = "pacific",
+    ["gmt"] = "utc",
+}
+
+local function weekday(year, month, day)
+    local monthOffsets = { 0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4 }
+    if month < 3 then
+        year = year - 1
+    end
+    local zeroBased = (year + math.floor(year / 4) - math.floor(year / 100) + math.floor(year / 400) + monthOffsets[month] + day) % 7
+    return zeroBased + 1
+end
+
+local function firstSunday(year, month)
+    return 1 + ((1 - weekday(year, month, 1)) % 7)
+end
+
+local function usesUSDST(utc, standardOffset)
+    local secondSundayMarch = firstSunday(utc.year, 3) + 7
+    local firstSundayNovember = firstSunday(utc.year, 11)
+    local startUTCHour = 2 - math.floor(standardOffset / 60)
+    local endUTCHour = 1 - math.floor(standardOffset / 60)
+
+    if utc.month < 3 or utc.month > 11 then
+        return false
+    elseif utc.month > 3 and utc.month < 11 then
+        return true
+    elseif utc.month == 3 then
+        return utc.day > secondSundayMarch or (utc.day == secondSundayMarch and utc.hour >= startUTCHour)
+    end
+
+    return utc.day < firstSundayNovember or (utc.day == firstSundayNovember and utc.hour < endUTCHour)
+end
+
+function LV.Util:NormalizeTimezone(value)
+    value = self:Trim(value):lower()
+    value = TIME_ZONE_ALIASES[value] or value
+    return TIME_ZONES[value] and value or "realm"
+end
+
+function LV.Util:TimezoneValues()
+    return TIME_ZONE_VALUES
+end
+
+function LV.Util:TimezoneLabel(value)
+    local timezone = TIME_ZONES[self:NormalizeTimezone(value)]
+    return timezone and timezone.label or TIME_ZONES.realm.label
+end
+
+function LV.Util:TimezoneCalendar(value, timestamp)
+    local timezoneID = self:NormalizeTimezone(value)
+    if timezoneID == "realm" then
+        if C_DateAndTime and C_DateAndTime.GetCurrentCalendarTime then
+            local ok, current = pcall(C_DateAndTime.GetCurrentCalendarTime)
+            if ok and type(current) == "table" and current.weekday then
+                return {
+                    wday = tonumber(current.weekday) or 1,
+                    hour = tonumber(current.hour) or 0,
+                    min = tonumber(current.minute) or 0,
+                }
+            end
+        end
+        return date("*t", tonumber(timestamp) or self:Now())
+    end
+
+    timestamp = tonumber(timestamp) or self:ServerNow()
+    local timezone = TIME_ZONES[timezoneID]
+    local utc = date("!*t", timestamp)
+    local offset = tonumber(timezone.standardOffset) or 0
+    if timezone.dst and usesUSDST(utc, offset) then
+        offset = offset + 60
+    end
+    return date("!*t", timestamp + (offset * 60))
+end
+
+function LV.Util:TimezoneWeekMinute(value, timestamp)
+    local current = self:TimezoneCalendar(value, timestamp)
+    return (((tonumber(current.wday) or 1) - 1) * 24 * 60)
+        + ((tonumber(current.hour) or 0) * 60)
+        + (tonumber(current.min) or 0)
+end
+
 function LV.Util:ItemID(itemLink)
     if not itemLink then
         return nil

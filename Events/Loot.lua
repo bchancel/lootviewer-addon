@@ -954,19 +954,7 @@ function LV.Loot:RecordChatLoot(message)
     end)
 end
 
-function LV.Loot:RecordRollWon(...)
-    local args = { ... }
-    local itemLink = nil
-    local roll = nil
-
-    for _, value in ipairs(args) do
-        if type(value) == "string" and value:find("item:", 1, true) then
-            itemLink = value
-        elseif type(value) == "number" and not roll then
-            roll = value
-        end
-    end
-
+function LV.Loot:RecordRollWon(itemLink, rollQuantity, rollType, roll, upgraded)
     if not itemLink then
         return
     end
@@ -980,7 +968,8 @@ function LV.Loot:RecordRollWon(...)
         instance = instance.name,
         difficultyID = instance.difficultyID,
         difficulty = instance.difficultyName,
-        roll = nil,
+        quantity = tonumber(rollQuantity) or 1,
+        roll = self:RollLabel(rollType),
         rawRoll = roll,
         src = "roll",
     })

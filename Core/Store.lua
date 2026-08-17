@@ -11,6 +11,17 @@ local function ensureTable(parent, key)
 end
 
 local DEFAULT_TEAM_COLOR = { r = 0.1725, g = 0.5569, b = 0.8275, a = 0.8 }
+local GLOBAL_PUG_TEAM = {
+    id = "pugs",
+    name = "Pugs",
+    tz = "realm",
+    clock24 = false,
+    excludeSync = true,
+    global = true,
+    locked = true,
+    color = { r = 197 / 255, g = 198 / 255, b = 199 / 255, a = 1 },
+    schedules = {},
+}
 
 local function clampColor(value, fallback)
     value = tonumber(value)
@@ -24,6 +35,11 @@ local function clampColor(value, fallback)
     return value
 end
 
+local function snapScheduleMinute(value, maximum)
+    value = math.floor(((tonumber(value) or 0) + 15) / 30) * 30
+    return math.max(0, math.min(maximum or 1440, value))
+end
+
 function LV.Store:Initialize()
     if type(LootViewerDB) ~= "table" then
         LootViewerDB = {}
@@ -32,9 +48,88 @@ function LV.Store:Initialize()
     LootViewerDB.v = LV.Constants.DB_VERSION
     ensureTable(LootViewerDB, "g")
     ensureTable(LootViewerDB, "c")
+    ensureTable(LootViewerDB, "a")
+    LV.Util:CopyDefaults(LootViewerDB.a, LV.Constants.DEFAULTS.account)
+
+    local dungeon = ensureTable(LootViewerDB, "m")
+    dungeon.v = LV.Constants.DB_VERSION
+    ensureTable(dungeon, "d")
+    ensureTable(dungeon.d, "n")
+    ensureTable(dungeon.d, "i")
+    ensureTable(dungeon.d, "s")
+    ensureTable(dungeon, "r")
+    ensureTable(dungeon, "l")
+    ensureTable(dungeon, "b")
+    ensureTable(dungeon, "t")
+    ensureTable(dungeon, "next")
+    dungeon.next.run = tonumber(dungeon.next.run) or 1
+    dungeon.next.loot = tonumber(dungeon.next.loot) or 1
+    dungeon.next.bonus = tonumber(dungeon.next.bonus) or 1
+    dungeon.next.trade = tonumber(dungeon.next.trade) or 1
 
     self.db = LootViewerDB
-    self.runtime = { rev = {} }
+    self.runtime = { rev = {}, dungeonRev = { n = {}, i = {}, s = {} } }
+    self:EnsureDungeonReverseMaps(dungeon)
+end
+
+function LV.Store:AccountConfig()
+    self:InitializeIfNeeded()
+    return self.db.a
+end
+
+function LV.Store:DungeonRecord()
+    self:InitializeIfNeeded()
+    return self.db.m
+end
+
+function LV.Store:EnsureDungeonReverseMaps(record)
+    if not self.runtime or not self.runtime.dungeonRev then
+        return
+    end
+    for _, kind in ipairs({ "n", "i", "s" }) do
+        wipe(self.runtime.dungeonRev[kind])
+        for index, value in ipairs((record.d and record.d[kind]) or {}) do
+            if value and value ~= "" then
+                self.runtime.dungeonRev[kind][value] = index
+            end
+        end
+    end
+end
+
+function LV.Store:DungeonDictionaryID(kind, value)
+    value = LV.Util:Trim(value)
+    if value == "" then
+        return nil
+    end
+    local record = self:DungeonRecord()
+    local dictionary = record.d[kind]
+    local reverse = self.runtime.dungeonRev[kind]
+    local existing = reverse[value]
+    if existing then
+        return existing
+    end
+    local id = #dictionary + 1
+    dictionary[id] = value
+    reverse[value] = id
+    return id
+end
+
+function LV.Store:DungeonDictionaryValue(kind, id)
+    local record = self:DungeonRecord()
+    id = tonumber(id)
+    return id and record.d[kind][id] or ""
+end
+
+function LV.Store:DungeonNameID(name)
+    return self:DungeonDictionaryID("n", name)
+end
+
+function LV.Store:DungeonItemID(itemLink)
+    return self:DungeonDictionaryID("i", LV.Util:ItemKey(itemLink))
+end
+
+function LV.Store:DungeonStringID(value)
+    return self:DungeonDictionaryID("s", value)
 end
 
 function LV.Store:GuildRecord(guildKey)
@@ -65,6 +160,12 @@ function LV.Store:GuildRecord(guildKey)
 
     record.v = LV.Constants.DB_VERSION
     LV.Util:CopyDefaults(record, { cfg = LV.Constants.DEFAULTS.cfg })
+    if record.cfg.authority == "rank" then
+        record.cfg.authority = "trusted"
+    end
+    if LV.Util:Trim(record.cfg.whisper):lower() == "bench" then
+        record.cfg.whisper = "standby"
+    end
     ensureTable(record, "d")
     ensureTable(record.d, "n")
     ensureTable(record.d, "i")
@@ -93,6 +194,7 @@ function LV.Store:UniqueTeamID(cfg, rawName)
     end
 
     local used = {}
+    used[LV.Constants.PUG_TEAM_ID] = true
     for _, team in ipairs(cfg.teams or {}) do
         if type(team) == "table" and team.id then
             used[team.id] = true
@@ -135,12 +237,23 @@ end
 
 function LV.Store:NormalizeTeams(record)
     local cfg = record.cfg
+    if type(cfg.teams) ~= "table" then
+        cfg.teams = {}
+    end
+    for index = #cfg.teams, 1, -1 do
+        local team = cfg.teams[index]
+        local teamID = type(team) == "table" and LV.Util:NormalizeSlug(team.id or team.name) or ""
+        if teamID == LV.Constants.PUG_TEAM_ID then
+            table.remove(cfg.teams, index)
+        end
+    end
     if type(cfg.teams) ~= "table" or #cfg.teams == 0 then
         cfg.teams = {
             {
                 id = "main",
                 name = "Main",
-                tz = "local",
+                tz = "realm",
+                clock24 = false,
                 schedules = {},
             },
         }
@@ -164,14 +277,21 @@ function LV.Store:NormalizeTeams(record)
         end
         seen[team.id] = true
 
-        team.tz = LV.Util:Trim(team.tz)
-        if team.tz == "" then
-            team.tz = "local"
-        end
+        team.tz = LV.Util:NormalizeTimezone(team.tz)
+        team.clock24 = team.clock24 == true or tonumber(team.clock24) == 1
 
         if type(team.schedules) ~= "table" then
             team.schedules = {}
         end
+        for _, slot in ipairs(team.schedules) do
+            if type(slot) == "table" then
+                local startMinute = snapScheduleMinute(((tonumber(slot.h) or 20) * 60) + (tonumber(slot.m) or 0), 1410)
+                slot.h = math.floor(startMinute / 60)
+                slot.m = startMinute % 60
+                slot.d = math.max(30, snapScheduleMinute(slot.d or 180, 1440))
+            end
+        end
+        team.excludeSync = team.excludeSync == true or tonumber(team.excludeSync) == 1
         team.color = self:NormalizeTeamColor(team.color)
     end
 
@@ -189,6 +309,9 @@ function LV.Store:NormalizeTeams(record)
 end
 
 function LV.Store:GetTeamByID(recordOrCfg, teamID)
+    if tostring(teamID or "") == LV.Constants.PUG_TEAM_ID then
+        return GLOBAL_PUG_TEAM, 0
+    end
     local cfg = recordOrCfg and recordOrCfg.cfg or recordOrCfg
     if type(cfg) ~= "table" then
         return nil
@@ -203,6 +326,15 @@ function LV.Store:GetTeamByID(recordOrCfg, teamID)
     return nil
 end
 
+function LV.Store:GlobalPugTeam()
+    return GLOBAL_PUG_TEAM
+end
+
+function LV.Store:IsGlobalPugTeam(teamOrID)
+    local teamID = type(teamOrID) == "table" and teamOrID.id or teamOrID
+    return tostring(teamID or "") == LV.Constants.PUG_TEAM_ID
+end
+
 function LV.Store:GetSelectedTeam(recordOrCfg)
     local cfg = recordOrCfg and recordOrCfg.cfg or recordOrCfg
     if type(cfg) ~= "table" then
@@ -210,6 +342,21 @@ function LV.Store:GetSelectedTeam(recordOrCfg)
     end
 
     return self:GetTeamByID(cfg, cfg.selectedTeam) or cfg.teams[1]
+end
+
+function LV.Store:IsTeamExcludedFromSync(guildKey, teamID)
+    if self:IsGlobalPugTeam(teamID) then
+        return true
+    end
+    local record = self:GuildRecord(guildKey)
+    local team = record and self:GetTeamByID(record, teamID or "main")
+    return team and team.excludeSync == true or false
+end
+
+function LV.Store:IsRaidExcludedFromSync(guildKey, raidOrID)
+    local record = self:GuildRecord(guildKey)
+    local raid = type(raidOrID) == "table" and raidOrID or (record and record.r and record.r[raidOrID])
+    return type(raid) == "table" and self:IsTeamExcludedFromSync(guildKey, raid.team or "main") or false
 end
 
 function LV.Store:AddRaidTeam(guildKey, teamName)
@@ -222,11 +369,16 @@ function LV.Store:AddRaidTeam(guildKey, teamName)
     if teamName == "" then
         teamName = "Team " .. tostring(#record.cfg.teams + 1)
     end
+    if LV.Util:NormalizeSlug(teamName) == LV.Constants.PUG_TEAM_ID then
+        LV:Print("Pugs is a reserved account-wide raid team.")
+        return nil
+    end
 
     local team = {
         id = self:UniqueTeamID(record.cfg, teamName),
         name = teamName,
-        tz = "local",
+        tz = "realm",
+        clock24 = false,
         color = self:DefaultTeamColor(),
         schedules = {},
     }
@@ -409,10 +561,70 @@ function LV.Store:Prune(guildKey, olderThanSeconds)
     for raidID, raid in pairs(record.r) do
         if type(raid) == "table" and tonumber(raid.st) and tonumber(raid.st) < cutoff then
             record.r[raidID] = nil
+            if record.cur == raidID then
+                record.cur = nil
+            end
             removed = removed + 1
         end
     end
 
+    return removed
+end
+
+function LV.Store:PruneAllHistory(guildKey)
+    local record = self:GuildRecord(guildKey)
+    if not record then
+        return 0
+    end
+
+    local removed = 0
+    for _, list in ipairs({ record.l, record.t }) do
+        removed = removed + #(list or {})
+        wipe(list)
+    end
+    for raidID, _ in pairs(record.r or {}) do
+        record.r[raidID] = nil
+        removed = removed + 1
+    end
+    record.cur = nil
+    return removed
+end
+
+function LV.Store:PruneSeason(guildKey, seasonID)
+    local record = self:GuildRecord(guildKey)
+    if not record or not LV.Seasons:IsSeasonID(seasonID) then
+        return 0
+    end
+
+    local removed = 0
+    local removedRaidIDs = {}
+    local removedLootIDs = {}
+    for raidID, raid in pairs(record.r or {}) do
+        if type(raid) == "table" and LV.Seasons:RaidSeasonID(guildKey, raid) == seasonID then
+            removedRaidIDs[raidID] = true
+            if raid.id then removedRaidIDs[raid.id] = true end
+            record.r[raidID] = nil
+            removed = removed + 1
+        end
+    end
+    for index = #(record.l or {}), 1, -1 do
+        local row = record.l[index]
+        if type(row) == "table" and (removedRaidIDs[row.sid] or LV.Seasons:EventSeasonID(guildKey, record, row) == seasonID) then
+            if row.id then removedLootIDs[row.id] = true end
+            table.remove(record.l, index)
+            removed = removed + 1
+        end
+    end
+    for index = #(record.t or {}), 1, -1 do
+        local row = record.t[index]
+        if type(row) == "table" and (removedRaidIDs[row.sid] or removedLootIDs[row.loot]) then
+            table.remove(record.t, index)
+            removed = removed + 1
+        end
+    end
+    if removedRaidIDs[record.cur] then
+        record.cur = nil
+    end
     return removed
 end
 
