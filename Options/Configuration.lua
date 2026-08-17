@@ -261,17 +261,13 @@ local function createScheduleRange(parent, slot, clock24, width)
 end
 
 local function guildRankMaximum()
-    if type(GuildControlGetNumRanks) == "function" then
-        local ok, count = pcall(GuildControlGetNumRanks)
-        count = ok and tonumber(count) or nil
-        if count and count > 1 then
-            return count - 1
-        end
+    if LV.Guild and LV.Guild.RankMaximum then
+        return LV.Guild:RankMaximum()
     end
     return 9
 end
 
-local function createRankRange(parent, cfg, width)
+local function createRankRange(parent, cfg, width, locked)
     width = tonumber(width) or 168
     local maximum = guildRankMaximum()
     cfg.rankMin = math.max(0, math.min(maximum, tonumber(cfg.rankMin) or 0))
@@ -366,23 +362,38 @@ local function createRankRange(parent, cfg, width)
         range:SetScript("OnUpdate", updateDrag)
     end
 
-    lowHandle:SetScript("OnMouseDown", function(_, button) if button == "LeftButton" then beginDrag("low") end end)
-    lowHandle:SetScript("OnMouseUp", stopDrag)
-    highHandle:SetScript("OnMouseDown", function(_, button) if button == "LeftButton" then beginDrag("high") end end)
-    highHandle:SetScript("OnMouseUp", stopDrag)
-    track:SetScript("OnMouseDown", function(_, button)
-        if button ~= "LeftButton" then return end
-        local clicked = cursorRank()
-        beginDrag(math.abs(clicked - cfg.rankMin) <= math.abs(clicked - cfg.rankMax) and "low" or "high")
-    end)
-    track:SetScript("OnMouseUp", stopDrag)
-    track:SetScript("OnEnter", function(self)
-        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-        GameTooltip:SetText("Trusted guild ranks")
-        GameTooltip:AddLine("Rank 0 is the highest guild rank. Drag either handle to select the trusted range.", 0.8, 0.8, 0.8, true)
-        GameTooltip:Show()
-    end)
-    track:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    if locked then
+        lowHandle:Disable()
+        highHandle:Disable()
+        track:Disable()
+        range:SetAlpha(0.55)
+        range:EnableMouse(true)
+        range:SetScript("OnEnter", function(self)
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            GameTooltip:SetText("Set by Guild Information")
+            GameTooltip:AddLine("The trusted rank range is controlled by the LootViewer Authority directive.", 0.8, 0.8, 0.8, true)
+            GameTooltip:Show()
+        end)
+        range:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    else
+        lowHandle:SetScript("OnMouseDown", function(_, button) if button == "LeftButton" then beginDrag("low") end end)
+        lowHandle:SetScript("OnMouseUp", stopDrag)
+        highHandle:SetScript("OnMouseDown", function(_, button) if button == "LeftButton" then beginDrag("high") end end)
+        highHandle:SetScript("OnMouseUp", stopDrag)
+        track:SetScript("OnMouseDown", function(_, button)
+            if button ~= "LeftButton" then return end
+            local clicked = cursorRank()
+            beginDrag(math.abs(clicked - cfg.rankMin) <= math.abs(clicked - cfg.rankMax) and "low" or "high")
+        end)
+        track:SetScript("OnMouseUp", stopDrag)
+        track:SetScript("OnEnter", function(self)
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            GameTooltip:SetText("Trusted guild ranks")
+            GameTooltip:AddLine("Rank 0 is the highest guild rank. Drag either handle to select the trusted range.", 0.8, 0.8, 0.8, true)
+            GameTooltip:Show()
+        end)
+        track:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    end
     range:SetScript("OnHide", stopDrag)
     update()
     return range
@@ -418,10 +429,10 @@ end
 
 local function dropdownCell(parent, x, y, width, label, values, getValue, setValue, controlWidth)
     local cell = optionCell(parent, x, y, width)
-    cellLabel(cell, label)
+    local labelText = cellLabel(cell, label)
     local dropdown = LV.Widgets:Dropdown(cell, values, getValue, setValue, controlWidth or 170)
     dropdown:SetPoint("RIGHT", -14, 0)
-    return cell
+    return cell, dropdown, labelText
 end
 
 local function editCell(parent, x, y, width, label, value, onCommit, controlWidth)
@@ -556,6 +567,13 @@ function UI:RenderGeneralOptions(guildInfo)
         return
     end
 
+    local authorityDirective, authorityStatus = LV.Guild:GuildAuthorityDirective()
+    local effectiveAuthority = authorityDirective or {
+        mode = cfg.authority or "assist",
+        rankMin = tonumber(cfg.rankMin) or 0,
+        rankMax = tonumber(cfg.rankMax) or 3,
+    }
+
     local tracking = sectionGrid(self.content, "Raid Tracking", -232, {
         {
             function(parent, x, y, width)
@@ -567,20 +585,76 @@ function UI:RenderGeneralOptions(guildInfo)
         },
         {
             function(parent, x, y, width)
-                dropdownCell(parent, x, y, width, "Authority", authorityModes,
-                    function() return cfg.authority or "assist" end,
+                local cell, dropdown, label = dropdownCell(parent, x, y, width, "Authority", authorityModes,
+                    function() return effectiveAuthority.mode or "assist" end,
                     function(value)
                         cfg.authority = value
                         self:Refresh()
                     end, 166)
+                local statusText
+                local statusColor
+                if authorityDirective then
+                    statusText = "SET BY GUILD INFORMATION"
+                    statusColor = LV.Widgets.colors.navigation
+                    dropdown:Disable()
+                    dropdown:SetAlpha(0.55)
+                    dropdown.arrow:SetTextColor(unpack(LV.Widgets.colors.textMuted))
+                elseif authorityStatus == "multiple" then
+                    statusText = "MULTIPLE DIRECTIVES FOUND"
+                    statusColor = LV.Widgets.colors.dangerBorder
+                elseif authorityStatus == "invalid" then
+                    statusText = "INVALID GUILD INFORMATION DIRECTIVE"
+                    statusColor = LV.Widgets.colors.dangerBorder
+                else
+                    local info = LV.Widgets:Button(cell, "i", 20, 20, nil, "ghost")
+                    info:SetPoint("LEFT", 86, 0)
+                    info.text:SetTextColor(unpack(LV.Widgets.colors.accentBright))
+                    info:HookScript("OnEnter", function(self)
+                        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+                        GameTooltip:SetText("Guild Information Authority")
+                        GameTooltip:AddLine("Using this character's saved setting. Guild officers can lock authority by adding exactly one standalone line to Guild Information:", 0.8, 0.8, 0.8, true)
+                        GameTooltip:AddLine("LootViewer Authority: Lead / Assist", 0.34, 0.86, 0.56, true)
+                        GameTooltip:AddLine("LootViewer Authority: Raid Lead", 0.34, 0.86, 0.56, true)
+                        GameTooltip:AddLine("LootViewer Authority: Anyone", 0.34, 0.86, 0.56, true)
+                        GameTooltip:AddLine("LootViewer Authority: Trusted 0-3", 0.34, 0.86, 0.56, true)
+                        GameTooltip:Show()
+                    end)
+                    info:HookScript("OnLeave", function() GameTooltip:Hide() end)
+                end
+                if statusText then
+                    label:ClearAllPoints()
+                    label:SetPoint("TOPLEFT", 14, -7)
+                    local status = cell:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+                    status:SetPoint("BOTTOMLEFT", 14, 7)
+                    status:SetText(statusText)
+                    status:SetTextColor(unpack(statusColor))
+                    cell:EnableMouse(true)
+                    cell:SetScript("OnEnter", function(self)
+                        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+                        if authorityDirective then
+                            GameTooltip:SetText("Set by Guild Information")
+                            GameTooltip:AddLine(authorityDirective.line, 0.8, 0.8, 0.8, true)
+                            GameTooltip:AddLine("Remove the directive to restore this character's saved setting.", 0.6, 0.7, 0.8, true)
+                        else
+                            GameTooltip:SetText("Guild Information directive ignored")
+                            GameTooltip:AddLine("Use exactly one standalone line such as: LootViewer Authority: Trusted 0-3", 0.8, 0.8, 0.8, true)
+                        end
+                        GameTooltip:Show()
+                    end)
+                    cell:SetScript("OnLeave", function() GameTooltip:Hide() end)
+                end
             end,
             function(parent, x, y, width)
-                if cfg.authority ~= "trusted" then
+                if effectiveAuthority.mode ~= "trusted" then
                     return
                 end
                 local cell = optionCell(parent, x, y, width)
                 cellLabel(cell, "Guild Rank Range")
-                local range = createRankRange(cell, cfg, 168)
+                local rankConfig = authorityDirective and {
+                    rankMin = effectiveAuthority.rankMin,
+                    rankMax = effectiveAuthority.rankMax,
+                } or cfg
+                local range = createRankRange(cell, rankConfig, 168, authorityDirective ~= nil)
                 range:SetPoint("RIGHT", -14, 0)
             end,
         },

@@ -1,5 +1,9 @@
 # Changelog
 
+## 12.1.3 - 2026-08-16
+
+- Added guild-wide authority directives through Guild Information, with locked Authority and Trusted Rank controls, safe local fallbacks, validation warnings, and in-panel setup guidance.
+
 ## 12.1.2 - 2026-08-16
 
 - Improved and reorganized the UI with clearer naming, responsive history tables, two-column configuration sections, foreground modals, and load-on-demand options.

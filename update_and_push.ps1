@@ -28,7 +28,7 @@ if (-not $originalBranch) {
 
 $tocPath = Join-Path $PSScriptRoot "LootViewer.toc"
 $toc = Get-Content -LiteralPath $tocPath -Raw
-if ($toc -notmatch '(?m)^## Version:\s*(\d+)\.(\d+)\.(\d+)(?:[^\r\n]*)$') {
+if ($toc -notmatch '(?m)^## Version:[ \t]*(\d+)\.(\d+)\.(\d+)[^\r\n]*\r?$') {
     throw "Could not find a semantic ## Version value in LootViewer.toc."
 }
 
@@ -39,8 +39,14 @@ $currentVersion = "$major.$minor.$patch"
 
 $runtimePath = Join-Path $PSScriptRoot "LootViewer.lua"
 $runtime = Get-Content -LiteralPath $runtimePath -Raw
-if ($runtime -notmatch '(?m)^LV\.version\s*=\s*"\d+\.\d+\.\d+"\s*$') {
+if ($runtime -notmatch '(?m)^LV\.version[ \t]*=[ \t]*"\d+\.\d+\.\d+"[ \t]*\r?$') {
     throw "Could not find a semantic LV.version value in LootViewer.lua."
+}
+
+$optionsTocPath = Join-Path $PSScriptRoot "Options\LootViewer_Options.toc"
+$optionsToc = Get-Content -LiteralPath $optionsTocPath -Raw
+if ($optionsToc -notmatch '(?m)^## Version:[ \t]*\d+\.\d+\.\d+[ \t]*\r?$') {
+    throw "Could not find a semantic ## Version value in LootViewer_Options.toc."
 }
 
 if ($NewVersion) {
@@ -61,10 +67,12 @@ Write-Host "Current branch: $originalBranch"
 Write-Host "Updating version: $currentVersion -> $version"
 Write-Host ("Release tagging: " + ($(if ($shouldTag) { "enabled" } else { "disabled" })))
 
-$toc = $toc -replace '(?m)^## Version:\s*[^\r\n]+$', "## Version: $version"
+$toc = $toc -replace '(?m)^## Version:[^\r\n]*', "## Version: $version"
 Set-Content -LiteralPath $tocPath -Value $toc -NoNewline
-$runtime = $runtime -replace '(?m)^LV\.version\s*=\s*"\d+\.\d+\.\d+"\s*$', "LV.version = `"$version`""
+$runtime = $runtime -replace '(?m)^LV\.version[ \t]*=[ \t]*"\d+\.\d+\.\d+"[ \t]*', "LV.version = `"$version`""
 Set-Content -LiteralPath $runtimePath -Value $runtime -NoNewline
+$optionsToc = $optionsToc -replace '(?m)^## Version:[^\r\n]*', "## Version: $version"
+Set-Content -LiteralPath $optionsTocPath -Value $optionsToc -NoNewline
 
 & (Join-Path $PSScriptRoot "build.ps1")
 

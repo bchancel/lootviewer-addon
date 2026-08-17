@@ -11,6 +11,7 @@ Retail targets: WoW `12.1.0` and `12.0.7` / interfaces `120100, 120007`.
 - Supports separate raid teams and visual 30-minute start/end schedules within one guild, with per-team portable time zones, optional 24-hour labels, and local-only sync exclusion.
 - Includes a reserved account-wide Pugs team in every raid-team selector; it has a fixed `#C5C6C7` color, no schedule or configuration, and never syncs.
 - Allows any player to start Pugs tracking regardless of guild authority, with an optional account-wide auto-start for current-tier pug raids outside configured raid hours.
+- Allows guild officers to publish a `LootViewer Authority:` directive in Guild Information that locks the effective Lead/Assist, Raid Lead, Anyone, or Trusted rank policy without replacing members' local fallback settings.
 - Filters Raid History and raid-linked Loot History data by raid tag.
 - Provides a Loot History minimum-difficulty slider from LFR through Mythic, with gray LFR and stacked Normal, Heroic, and Mythic distribution segments.
 - Anchors scheduled-raid lateness to the configured team-time-zone start plus the grace period, even when tracking starts early.
@@ -35,6 +36,19 @@ Retail targets: WoW `12.1.0` and `12.0.7` / interfaces `120100, 120007`.
 - Scales loot Distribution bars proportionally against the highest recipient total, matching a DPS-meter presentation.
 - Remembers the last selected raid and dungeon minimum loot-level thresholds across window closes and UI reloads.
 - Loads the configuration UI only when requested through the companion `LootViewer_Options` addon.
+
+## Guild authority directive
+
+Guild officers can place exactly one of these standalone lines anywhere in the Guild Information text box:
+
+```text
+LootViewer Authority: Lead / Assist
+LootViewer Authority: Raid Lead
+LootViewer Authority: Anyone
+LootViewer Authority: Trusted 0-3
+```
+
+Matching is case-insensitive and permits extra whitespace. A valid directive locks the effective Authority setting for members of that guild; the Trusted form also locks the guild-rank range. LootViewer retains each member's saved local values and restores them when the directive is removed. Missing, malformed, or duplicate directives leave local settings active, with malformed and duplicate entries identified in Configuration.
 
 ## Repository layout
 

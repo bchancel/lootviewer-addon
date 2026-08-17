@@ -99,13 +99,15 @@ if ($unreferencedLua.Count -gt 0) {
 $optionsTocText = Get-Content -LiteralPath $optionsTocPath -Raw
 foreach ($pattern in @(
     '(?m)^## Interface:\s*120100,\s*120007\s*$',
-    '(?m)^## Version:\s*12\.1\.2\s*$',
     '(?m)^## Dependencies:\s*LootViewer\s*$',
     '(?m)^## LoadOnDemand:\s*1\s*$'
 )) {
     if ($optionsTocText -notmatch $pattern) {
         throw "LootViewer_Options.toc is missing required on-demand addon metadata."
     }
+}
+if ($optionsTocText -notmatch "(?m)^## Version:\s*$([regex]::Escape($tocVersion))\s*$") {
+    throw "LootViewer_Options.toc version does not match LootViewer.toc version $tocVersion."
 }
 $optionsTocEntries = @(
     Get-Content -LiteralPath $optionsTocPath | ForEach-Object {
@@ -174,6 +176,7 @@ if ($releaseWorkflowText -notmatch 'BigWigsMods/packager@v2' -or
 $storeText = Get-Content -LiteralPath (Join-Path $root "Core\Store.lua") -Raw
 $constantsText = Get-Content -LiteralPath (Join-Path $root "Core\Constants.lua") -Raw
 $utilText = Get-Content -LiteralPath (Join-Path $root "Core\Util.lua") -Raw
+$guildText = Get-Content -LiteralPath (Join-Path $root "Core\Guild.lua") -Raw
 $dataSyncText = Get-Content -LiteralPath (Join-Path $root "Core\DataSync.lua") -Raw
 $seasonText = Get-Content -LiteralPath (Join-Path $root "Core\Seasons.lua") -Raw
 $tierText = Get-Content -LiteralPath (Join-Path $root "Core\Tier.lua") -Raw
@@ -255,6 +258,16 @@ if ($storeText -notmatch 'GLOBAL_PUG_TEAM' -or
     $optionsText -notmatch 'ACCOUNT-WIDE.*LOCAL ONLY' -or
     $uiText -notmatch 'PUG_TEAM_NAME') {
     throw "The reserved account-wide Pugs raid team or its forced local-only behavior appears incomplete."
+}
+if ($guildText -notmatch 'ParseAuthorityDirective' -or
+    $guildText -notmatch 'GetGuildInfoText' -or
+    $guildText -notmatch 'EffectiveAuthority' -or
+    $guildText -notmatch 'lootviewer%s\+authority' -or
+    $optionsText -notmatch 'SET BY GUILD INFORMATION' -or
+    $optionsText -notmatch 'MULTIPLE DIRECTIVES FOUND' -or
+    $optionsText -notmatch "Using this character's saved setting" -or
+    $optionsText -notmatch 'authorityDirective') {
+    throw "Guild Information authority directives or their locked configuration state appear incomplete."
 }
 if ($constantsText -notmatch 'autoPugRaids\s*=\s*false' -or
     $raidText -notmatch 'MaybeAutoStartPug' -or
