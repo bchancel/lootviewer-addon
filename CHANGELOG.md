@@ -1,5 +1,9 @@
 # Changelog
 
+## 12.1.4 - 2026-08-17
+
+- Fixed guild authority scanning to avoid the protected legacy Guild Information API by reading and caching the guild club description only from the out-of-combat Configuration panel.
+
 ## 12.1.3 - 2026-08-16
 
 - Added guild-wide authority directives through Guild Information, with locked Authority and Trusted Rank controls, safe local fallbacks, validation warnings, and in-panel setup guidance.

@@ -567,7 +567,7 @@ function UI:RenderGeneralOptions(guildInfo)
         return
     end
 
-    local authorityDirective, authorityStatus = LV.Guild:GuildAuthorityDirective()
+    local authorityDirective, authorityStatus = LV.Guild:ScanAuthorityDirective()
     local effectiveAuthority = authorityDirective or {
         mode = cfg.authority or "assist",
         rankMin = tonumber(cfg.rankMin) or 0,

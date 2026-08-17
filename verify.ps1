@@ -260,7 +260,10 @@ if ($storeText -notmatch 'GLOBAL_PUG_TEAM' -or
     throw "The reserved account-wide Pugs raid team or its forced local-only behavior appears incomplete."
 }
 if ($guildText -notmatch 'ParseAuthorityDirective' -or
-    $guildText -notmatch 'GetGuildInfoText' -or
+    $guildText -notmatch 'C_Club\.GetGuildClubId' -or
+    $guildText -notmatch 'C_Club\.GetClubInfo' -or
+    $guildText -notmatch 'ScanAuthorityDirective' -or
+    $guildText -match 'GetGuildInfoText' -or
     $guildText -notmatch 'EffectiveAuthority' -or
     $guildText -notmatch 'lootviewer%s\+authority' -or
     $optionsText -notmatch 'SET BY GUILD INFORMATION' -or

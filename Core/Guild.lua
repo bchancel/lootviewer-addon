@@ -82,15 +82,15 @@ function LV.Guild:ParseAuthorityDirective(text)
 end
 
 function LV.Guild:GuildInformationText()
-    local getter = _G.GetGuildInfoText
-    if type(getter) ~= "function" and C_GuildInfo then
-        getter = C_GuildInfo.GetGuildInfoText
-    end
-    if type(getter) ~= "function" then
+    if not (C_Club and C_Club.GetGuildClubId and C_Club.GetClubInfo) then
         return ""
     end
-    local ok, text = pcall(getter)
-    return ok and tostring(text or "") or ""
+    local clubID = C_Club.GetGuildClubId()
+    if not clubID then
+        return ""
+    end
+    local clubInfo = C_Club.GetClubInfo(clubID)
+    return clubInfo and tostring(clubInfo.description or "") or ""
 end
 
 function LV.Guild:GuildAuthorityDirective()
@@ -99,7 +99,33 @@ function LV.Guild:GuildAuthorityDirective()
     if not actual or not current or actual.key ~= current.key or current.override then
         return nil, "missing"
     end
-    return self:ParseAuthorityDirective(self:GuildInformationText())
+    local cached = self.authorityDirectiveCache
+    if not cached or cached.guildKey ~= actual.key then
+        return nil, "missing"
+    end
+    return cached.directive, cached.status
+end
+
+function LV.Guild:ScanAuthorityDirective()
+    if InCombatLockdown and InCombatLockdown() then
+        return self:GuildAuthorityDirective()
+    end
+
+    local actual = self:ActualInfo()
+    local current = self:CurrentInfo()
+    if not actual or not current or actual.key ~= current.key or current.override then
+        return nil, "missing"
+    end
+
+    local text = self:GuildInformationText()
+    local directive, status = self:ParseAuthorityDirective(text)
+    self.authorityDirectiveCache = {
+        guildKey = actual.key,
+        directive = directive,
+        status = status,
+        text = text,
+    }
+    return directive, status
 end
 
 function LV.Guild:EffectiveAuthority()
@@ -121,19 +147,6 @@ function LV.Guild:EffectiveAuthority()
         rankMax = tonumber(cfg.rankMax) or 3,
         source = "local",
     }, status
-end
-
-function LV.Guild:RefreshAuthorityDirectiveUI()
-    local actual = self:ActualInfo()
-    local signature = (actual and actual.key or "") .. "\031" .. self:GuildInformationText()
-    if signature == self.authorityDirectiveSignature then
-        return false
-    end
-    self.authorityDirectiveSignature = signature
-    if LV.UI and LV.UI.currentTab == "config" and LV.UI.Refresh then
-        LV.UI:Refresh()
-    end
-    return true
 end
 
 function LV.Guild:ActualInfo()
@@ -470,16 +483,14 @@ end
 LV:RegisterEvent("PLAYER_LOGIN", function()
     -- Guild roster loading is left to Blizzard's guild UI. LootViewer only
     -- records raid members, whispers, and explicit overlay/manual actions.
-    LV.Guild:RefreshAuthorityDirectiveUI()
 end)
 
 LV:RegisterEvent("GUILD_ROSTER_UPDATE", function()
     -- Roster scans are intentionally user-triggered from the UI. The client can
     -- fire this event repeatedly while loading guild data, and rebuilding rows
     -- here makes the config frame feel sluggish.
-    LV.Guild:RefreshAuthorityDirectiveUI()
 end)
 
 LV:RegisterEvent("PLAYER_GUILD_UPDATE", function()
-    LV.Guild:RefreshAuthorityDirectiveUI()
+    LV.Guild.authorityDirectiveCache = nil
 end)
