@@ -535,6 +535,7 @@ function LV.Widgets:Dropdown(parent, values, getValue, setValue, width, maxVisib
     local function refresh()
         button.text:SetText(labelFor(getValue()))
     end
+    button.Refresh = refresh
 
     maxVisible = math.max(1, math.floor(tonumber(maxVisible) or #values))
     local rowParent = button.menu

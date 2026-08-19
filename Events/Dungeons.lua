@@ -128,6 +128,15 @@ function LV.Dungeons:Record()
     return LV.Store:DungeonRecord()
 end
 
+function LV.Dungeons:IsWarboundRow(row)
+    if type(row) ~= "table" then
+        return false
+    end
+    local itemLink = row.itemLink
+        or (row.item and LV.Store:DungeonDictionaryValue("i", row.item))
+    return LV.Util:IsItemWarbound(itemLink)
+end
+
 function LV.Dungeons:ContextSeasonID(context)
     if context and LV.Seasons:IsSeasonID(context.seasonID) then
         return context.seasonID
@@ -321,13 +330,14 @@ end
 
 function LV.Dungeons:LootTrack(context, source)
     if source == "bonus" then
-        return "myth"
+        local level = tonumber(context and context.level) or 0
+        return level >= 10 and "myth" or (level <= 5 and "champion" or "hero")
     end
     local level = tonumber(context and context.level) or 0
     return level <= 5 and "champion" or "hero"
 end
 
-function LV.Dungeons:FindDuplicate(runID, playerID, itemID, itemKey, timestamp)
+function LV.Dungeons:FindDuplicate(runID, playerID, itemID, itemKey, timestamp, source, bonusID)
     local rows = self:Record().l
     for index = #rows, 1, -1 do
         local row = rows[index]
@@ -335,7 +345,10 @@ function LV.Dungeons:FindDuplicate(runID, playerID, itemID, itemKey, timestamp)
         if delta > 20 and (tonumber(timestamp) or 0) >= (tonumber(row.ts) or 0) then
             break
         end
-        if row.run == runID and row.p == playerID
+        if bonusID and row.bonus == bonusID then
+            return row
+        end
+        if not bonusID and source ~= "bonus" and row.run == runID and row.p == playerID
             and ((itemID > 0 and tonumber(row.itemID) == itemID) or row.item == itemKey) then
             return row
         end
@@ -344,7 +357,8 @@ function LV.Dungeons:FindDuplicate(runID, playerID, itemID, itemKey, timestamp)
 end
 
 function LV.Dungeons:AddLoot(fields)
-    if not self:IsEnabled() or type(fields) ~= "table" or not isGear(fields.itemLink) then
+    if not self:IsEnabled() or type(fields) ~= "table" or not isGear(fields.itemLink)
+        or LV.Util:IsItemWarbound(fields.itemLink) then
         return nil
     end
     local context = fields.context or self.current
@@ -369,11 +383,11 @@ function LV.Dungeons:AddLoot(fields)
     local itemKeyID = LV.Store:DungeonItemID(fields.itemLink)
     local itemID = tonumber(fields.itemID) or LV.Util:ItemID(fields.itemLink) or 0
     local timestamp = tonumber(fields.ts) or LV.Util:Now()
-    local duplicate = self:FindDuplicate(run.id, playerID, itemID, itemKeyID, timestamp)
+    local duplicate = self:FindDuplicate(run.id, playerID, itemID, itemKeyID, timestamp, fields.source, fields.bonusID)
     if duplicate then
         if fields.source == "bonus" then
             duplicate.src = "bonus"
-            duplicate.track = "myth"
+            duplicate.track = self:LootTrack(context, "bonus")
             duplicate.spec = tonumber(fields.specID) or duplicate.spec
             duplicate.bonus = fields.bonusID or duplicate.bonus
         end
@@ -438,6 +452,49 @@ function LV.Dungeons:RecordChatLoot(message)
     if not context then
         return
     end
+    local bonusPlayer, bonusItemLink = LV.Util:ExtractBonusLoot(message)
+    if bonusPlayer and bonusItemLink then
+        if context.kind ~= "keystone" or not context.completedAt or not isGear(bonusItemLink) then
+            return
+        end
+        local normalizedPlayer = normalizeName(bonusPlayer)
+        local specID = nil
+        local isSelf = normalizedPlayer:lower() == LV.Util:PlayerFullName():lower()
+        local pendingResult = self.pendingBonusResult
+        if pendingResult and isSelf
+            and LV.Util:ItemKey(pendingResult.itemLink) == LV.Util:ItemKey(bonusItemLink) then
+            pendingResult.consumed = true
+            specID = pendingResult.specID
+            self.pendingBonusResult = nil
+        elseif isSelf and self.pendingBonus then
+            specID = self.pendingBonus.specID
+        end
+        if isSelf then
+            self.recentSelfBonusChat = { item = LV.Util:ItemKey(bonusItemLink), ts = LV.Util:Now() }
+        end
+        local bonus = self:AddBonusRecord({
+            ts = LV.Util:Now(),
+            player = normalizedPlayer,
+            success = true,
+            typeIdentifier = "item",
+            itemLink = bonusItemLink,
+            quantity = 1,
+            specID = specID,
+        })
+        if bonus then
+            self:AddLoot({
+                ts = bonus.ts,
+                player = normalizedPlayer,
+                itemLink = bonusItemLink,
+                quantity = 1,
+                source = "bonus",
+                specID = bonus.spec,
+                bonusID = bonus.id,
+                context = context,
+            })
+        end
+        return
+    end
     local player, itemLink = parseChatLoot(message)
     if not player or not itemLink or not isGear(itemLink) then
         return
@@ -473,14 +530,14 @@ function LV.Dungeons:AddBonusRecord(fields)
         return nil
     end
     local record = self:Record()
-    local playerID = LV.Store:DungeonNameID(LV.Util:PlayerFullName())
+    local playerID = LV.Store:DungeonNameID(normalizeName(fields.player or LV.Util:PlayerFullName()))
     local row = {
         id = LV.Store:NewID(record, "bonus", "mb"),
         run = context.runID,
         sea = self:ContextSeasonID(context),
         ts = tonumber(fields.ts) or LV.Util:Now(),
         p = playerID,
-        spec = tonumber(fields.specID) or currentLootSpecID(),
+        spec = tonumber(fields.specID) or nil,
         ok = fields.success and 1 or nil,
         item = fields.itemLink and LV.Store:DungeonItemID(fields.itemLink) or nil,
         itemID = fields.itemLink and (LV.Util:ItemID(fields.itemLink) or 0) or 0,
@@ -498,27 +555,56 @@ function LV.Dungeons:RecordBonusResult(typeIdentifier, itemLink, quantity, specI
     if not context or not context.completedAt then
         return
     end
-    local bonus = self:AddBonusRecord({
+    local recentChat = self.recentSelfBonusChat
+    if recentChat and LV.Util:Now() - (tonumber(recentChat.ts) or 0) <= 5
+        and recentChat.item == LV.Util:ItemKey(itemLink) then
+        self.recentSelfBonusChat = nil
+        self.pendingBonus = nil
+        return
+    end
+    local fallback = {
         ts = LV.Util:Now(),
-        success = itemLink ~= nil and itemLink ~= "",
         typeIdentifier = typeIdentifier,
         itemLink = itemLink,
         quantity = quantity,
-        specID = specID or (self.pendingBonus and self.pendingBonus.specID),
+        specID = tonumber(specID) or (self.pendingBonus and self.pendingBonus.specID),
         currencyID = currencyID,
         isSecondaryResult = isSecondaryResult,
-    })
-    if bonus and itemLink and isGear(itemLink) then
-        self:AddLoot({
-            ts = bonus.ts,
+    }
+    self.pendingBonusResult = fallback
+    local function saveFallback()
+        if LV.Dungeons.pendingBonusResult ~= fallback or fallback.consumed then
+            return
+        end
+        LV.Dungeons.pendingBonusResult = nil
+        local bonus = LV.Dungeons:AddBonusRecord({
+            ts = fallback.ts,
             player = LV.Util:PlayerFullName(),
-            itemLink = itemLink,
-            quantity = quantity,
-            source = "bonus",
-            specID = bonus.spec,
-            bonusID = bonus.id,
-            context = context,
+            success = fallback.itemLink ~= nil and fallback.itemLink ~= "",
+            typeIdentifier = fallback.typeIdentifier,
+            itemLink = fallback.itemLink,
+            quantity = fallback.quantity,
+            specID = fallback.specID,
+            currencyID = fallback.currencyID,
+            isSecondaryResult = fallback.isSecondaryResult,
         })
+        if bonus and fallback.itemLink and isGear(fallback.itemLink) then
+            LV.Dungeons:AddLoot({
+                ts = bonus.ts,
+                player = LV.Util:PlayerFullName(),
+                itemLink = fallback.itemLink,
+                quantity = fallback.quantity,
+                source = "bonus",
+                specID = bonus.spec,
+                bonusID = bonus.id,
+                context = LV.Dungeons.current,
+            })
+        end
+    end
+    if C_Timer and C_Timer.After then
+        C_Timer.After(3, saveFallback)
+    else
+        saveFallback()
     end
     self.pendingBonus = nil
 end
@@ -548,7 +634,8 @@ function LV.Dungeons:FindTradeSource(fromName, itemLink, timestamp)
             break
         end
         local ownerID = row.o or row.p
-        if ownerID == fromID and ((itemID > 0 and tonumber(row.itemID) == itemID) or row.item == itemKey) then
+        if row.src ~= "bonus" and ownerID == fromID
+            and ((itemID > 0 and tonumber(row.itemID) == itemID) or row.item == itemKey) then
             return row
         end
     end

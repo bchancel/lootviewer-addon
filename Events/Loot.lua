@@ -2,6 +2,7 @@ local _, LV = ...
 
 LV.Loot = {}
 LV.modules.Loot = LV.Loot
+LV.Loot.bonusEventSequence = 0
 
 local lootHistoryScanDelays = { 1, 4, 10, 20, 45 }
 local lootHistoryAddOns = {
@@ -368,6 +369,8 @@ local function findWinnerEntry(value, depth)
 end
 
 function LV.Loot:NormalizePlayerName(name)
+    name = stripWoWText(name)
+    name = name:match("^%[(.-)%]$") or name
     name = LV.Util:Trim(name)
     if name == "" or name == YOU then
         return LV.Util:PlayerFullName()
@@ -689,15 +692,75 @@ end
 
 function LV.Loot:Classify(source, rollType, itemLink)
     local boe = false
-    local warbound = false
+    local warbound = LV.Util:IsItemWarbound(itemLink)
 
     if source == "trash" and LV.Util:IsItemBoE(itemLink) then
         boe = true
-    elseif source == "boss" and (not rollType or rollType == "" or rollType == "noroll") then
-        warbound = true
     end
 
     return boe, warbound
+end
+
+function LV.Loot:IsWarboundRow(guildKey, row)
+    if type(row) ~= "table" then
+        return false
+    end
+    local itemLink = row._itemLink or row.itemLink
+    if not itemLink and guildKey and row.item then
+        itemLink = LV.Store:DictionaryValue(guildKey, "i", row.item)
+    end
+    return LV.Util:IsItemWarbound(itemLink)
+end
+
+function LV.Loot:LootHistoryKey(encounterID, lootListID)
+    encounterID = tonumber(encounterID)
+    local idType = type(lootListID)
+    if not encounterID or encounterID <= 0 or (idType ~= "number" and idType ~= "string") then
+        return nil
+    end
+
+    local dropID = LV.Util:Trim(tostring(lootListID))
+    if dropID == "" then
+        return nil
+    end
+
+    return tostring(encounterID) .. ":" .. dropID
+end
+
+function LV.Loot:FindLootHistoryDuplicate(record, fields)
+    local historyKey = fields.lh
+    if not historyKey then
+        return nil
+    end
+
+    local playerID = fields.p
+    local itemID = tonumber(fields.itemID) or 0
+    local itemKey = fields.item
+    local encounterID = tonumber(fields.e) or 0
+    local raidID = fields.sid
+    local legacyMatch = nil
+
+    for index = #record.l, 1, -1 do
+        local row = record.l[index]
+        if type(row) == "table" and row.sid == raidID then
+            if row.lh == historyKey then
+                return row
+            end
+
+            local rowItemID = tonumber(row.itemID) or 0
+            local sameItemID = rowItemID > 0 and itemID > 0 and rowItemID == itemID
+            local sameItemKey = row.item ~= nil and itemKey ~= nil and row.item == itemKey
+            if not legacyMatch
+                and not row.lh
+                and (tonumber(row.e) or 0) == encounterID
+                and row.p == playerID
+                and (sameItemID or sameItemKey) then
+                legacyMatch = row
+            end
+        end
+    end
+
+    return legacyMatch
 end
 
 function LV.Loot:FindDuplicate(record, fields, windowSeconds)
@@ -730,6 +793,38 @@ function LV.Loot:FindDuplicate(record, fields, windowSeconds)
     end
 
     return nil
+end
+
+function LV.Loot:FindBonusDuplicate(record, bonusEventID)
+    if LV.Util:IsBlank(bonusEventID) then
+        return nil
+    end
+    for index = #((record and record.l) or {}), 1, -1 do
+        local row = record.l[index]
+        if type(row) == "table" and row.br == bonusEventID then
+            return row
+        end
+    end
+    return nil
+end
+
+function LV.Loot:NewBonusEventID(scope, player, itemLink, timestamp)
+    self.bonusEventSequence = (tonumber(self.bonusEventSequence) or 0) + 1
+    return table.concat({
+        tostring(scope or "bonus"),
+        tostring(tonumber(timestamp) or LV.Util:Now()),
+        tostring(self.bonusEventSequence),
+        self:NormalizePlayerName(player):lower(),
+        tostring(LV.Util:ItemID(itemLink) or 0),
+    }, ":")
+end
+
+function LV.Loot:BonusRewardDifficultyID(sourceDifficultyID)
+    sourceDifficultyID = tonumber(sourceDifficultyID) or 0
+    if sourceDifficultyID == 15 or sourceDifficultyID == 16 then
+        return 16
+    end
+    return sourceDifficultyID
 end
 
 function LV.Loot:HasRecentLoot(record, playerID, itemID, itemKey, timestamp, windowSeconds)
@@ -774,6 +869,9 @@ function LV.Loot:AddLootEvent(fields)
         rollSource = "winner"
     end
     local boe, warbound = self:Classify(fields.src, rollType, itemLink)
+    if warbound then
+        return nil
+    end
 
     local row = {
         ts = tonumber(fields.ts) or LV.Util:Now(),
@@ -794,8 +892,11 @@ function LV.Loot:AddLootEvent(fields)
         raw = rawRoll and tostring(rawRoll) or nil,
         src = fields.src or "unknown",
         boe = boe and 1 or nil,
-        wb = warbound and 1 or nil,
+        spec = tonumber(fields.specID) or nil,
+        bdid = tonumber(fields.bonusDifficultyID) or nil,
+        br = fields.bonusEventID,
         rb = rollBreakdown,
+        lh = fields.lootHistoryKey or fields.lh,
         by = LV.Store:NameID(guildKey, LV.Util:PlayerFullName()),
     }
 
@@ -810,8 +911,15 @@ function LV.Loot:AddLootEvent(fields)
         LV.Store:SetPlayerClass(guildKey, row.p, fields.className)
     end
 
-    local duplicate = self:FindDuplicate(record, row, fields.dedupeSeconds)
+    local duplicate
+    if row.br then
+        duplicate = self:FindBonusDuplicate(record, row.br)
+    else
+        duplicate = self:FindLootHistoryDuplicate(record, row)
+            or self:FindDuplicate(record, row, fields.dedupeSeconds)
+    end
     if duplicate then
+        duplicate.lh = duplicate.lh or row.lh
         local duplicateRoll = tostring(duplicate.r or "")
         if row.r ~= "" and (rollSource == "winner" or duplicateRoll == "" or duplicateRoll:match("^%d+$")) then
             duplicate.r = row.r
@@ -822,7 +930,8 @@ function LV.Loot:AddLootEvent(fields)
             duplicate.raw = duplicate.raw or row.raw
         end
         duplicate.boe = duplicate.boe or row.boe
-        duplicate.wb = duplicate.wb or row.wb
+        duplicate.spec = duplicate.spec or row.spec
+        duplicate.bdid = duplicate.bdid or row.bdid
         if row.rb and (
             not duplicate.rb
             or tableCount(duplicate.rb) < tableCount(row.rb)
@@ -851,7 +960,10 @@ function LV.Loot:AddLootEvent(fields)
         if (not duplicate.cls or duplicate.cls == 0) and row.cls then
             duplicate.cls = row.cls
         end
-        if row.src == "boss" then
+        if row.src == "bonus" then
+            duplicate.src = "bonus"
+            duplicate.spec = row.spec or duplicate.spec
+        elseif row.src == "boss" and duplicate.src ~= "bonus" then
             duplicate.src = "boss"
         end
         return duplicate
@@ -908,6 +1020,12 @@ function LV.Loot:RecordChatLoot(message)
         return
     end
 
+    local bonusPlayer, bonusItemLink = LV.Util:ExtractBonusLoot(message)
+    if bonusPlayer and bonusItemLink then
+        self:RecordRaidBonusChatLoot(bonusPlayer, bonusItemLink)
+        return
+    end
+
     local itemLink = tostring(message or ""):match("(|c%x+|Hitem:.-|h%[.-%]|h|r)")
     if not itemLink then
         return
@@ -954,6 +1072,58 @@ function LV.Loot:RecordChatLoot(message)
     end)
 end
 
+function LV.Loot:RecordRaidBonusAward(player, itemLink, quantity, specID, bonusEventID, timestamp)
+    if not LV.Util:InRaidInstance() or not LV.Raid:GetActiveSession() or LV.Util:IsBlank(itemLink) then
+        return nil
+    end
+
+    timestamp = tonumber(timestamp) or LV.Util:Now()
+    local instance = LV.Util:CurrentInstance()
+    local encounterID = self:CurrentOrLastEncounterID()
+    local normalizedPlayer = self:NormalizePlayerName(player)
+    local classToken = nil
+    if normalizedPlayer:lower() == LV.Util:PlayerFullName():lower() then
+        local _, playerClassToken = UnitClass("player")
+        classToken = playerClassToken
+    end
+    return self:AddLootEvent({
+        ts = timestamp,
+        encounterID = encounterID,
+        itemLink = itemLink,
+        quantity = tonumber(quantity) or 1,
+        player = normalizedPlayer,
+        className = classToken,
+        instanceID = instance.instanceID,
+        instance = instance.name,
+        difficultyID = instance.difficultyID,
+        difficulty = instance.difficultyName,
+        bonusDifficultyID = self:BonusRewardDifficultyID(instance.difficultyID),
+        boss = self:CurrentOrLastEncounterName(encounterID),
+        src = "bonus",
+        specID = tonumber(specID) or nil,
+        bonusEventID = bonusEventID or self:NewBonusEventID("raid", normalizedPlayer, itemLink, timestamp),
+    })
+end
+
+function LV.Loot:RecordRaidBonusChatLoot(player, itemLink)
+    local normalizedPlayer = self:NormalizePlayerName(player)
+    local specID = nil
+    local isSelf = normalizedPlayer:lower() == LV.Util:PlayerFullName():lower()
+    local pendingResult = self.pendingRaidBonusResult
+    if pendingResult and isSelf
+        and LV.Util:ItemKey(pendingResult.itemLink) == LV.Util:ItemKey(itemLink) then
+        pendingResult.consumed = true
+        specID = pendingResult.specID
+        self.pendingRaidBonusResult = nil
+    elseif isSelf and self.pendingRaidBonus then
+        specID = self.pendingRaidBonus.specID
+    end
+    if isSelf then
+        self.recentSelfBonusChat = { item = LV.Util:ItemKey(itemLink), ts = LV.Util:Now() }
+    end
+    return self:RecordRaidBonusAward(normalizedPlayer, itemLink, 1, specID)
+end
+
 function LV.Loot:RecordRollWon(itemLink, rollQuantity, rollType, roll, upgraded)
     if not itemLink then
         return
@@ -973,6 +1143,67 @@ function LV.Loot:RecordRollWon(itemLink, rollQuantity, rollType, roll, upgraded)
         rawRoll = roll,
         src = "roll",
     })
+end
+
+function LV.Loot:BeginRaidBonusRoll()
+    if not LV.Util:InRaidInstance() or not LV.Raid:GetActiveSession() then
+        return
+    end
+    local specID = type(GetLootSpecialization) == "function" and tonumber(GetLootSpecialization()) or 0
+    if (not specID or specID <= 0) and type(GetSpecialization) == "function"
+        and type(GetSpecializationInfo) == "function" then
+        local specialization = GetSpecialization()
+        if specialization then
+            local ok, activeSpecID = pcall(GetSpecializationInfo, specialization)
+            if ok then
+                specID = tonumber(activeSpecID) or 0
+            end
+        end
+    end
+    self.pendingRaidBonus = {
+        ts = LV.Util:Now(),
+        encounterID = self:CurrentOrLastEncounterID(),
+        specID = specID,
+    }
+end
+
+function LV.Loot:RecordRaidBonusResult(typeIdentifier, itemLink, quantity, specID)
+    if not LV.Util:InRaidInstance() or not LV.Raid:GetActiveSession()
+        or typeIdentifier ~= "item" or LV.Util:IsBlank(itemLink) then
+        return
+    end
+
+    local recentChat = self.recentSelfBonusChat
+    if recentChat and LV.Util:Now() - (tonumber(recentChat.ts) or 0) <= 5
+        and recentChat.item == LV.Util:ItemKey(itemLink) then
+        self.recentSelfBonusChat = nil
+        self.pendingRaidBonus = nil
+        return
+    end
+
+    local pending = self.pendingRaidBonus or {}
+    local fallback = {
+        itemLink = itemLink,
+        quantity = tonumber(quantity) or 1,
+        specID = tonumber(specID) or tonumber(pending.specID) or nil,
+        ts = LV.Util:Now(),
+    }
+    fallback.eventID = self:NewBonusEventID("raid-result", LV.Util:PlayerFullName(), itemLink, fallback.ts)
+    self.pendingRaidBonusResult = fallback
+    if C_Timer and C_Timer.After then
+        C_Timer.After(3, function()
+            if LV.Loot.pendingRaidBonusResult == fallback and not fallback.consumed then
+                LV.Loot.pendingRaidBonusResult = nil
+                LV.Loot:RecordRaidBonusAward(LV.Util:PlayerFullName(), fallback.itemLink,
+                    fallback.quantity, fallback.specID, fallback.eventID, fallback.ts)
+            end
+        end)
+    else
+        self.pendingRaidBonusResult = nil
+        self:RecordRaidBonusAward(LV.Util:PlayerFullName(), fallback.itemLink,
+            fallback.quantity, fallback.specID, fallback.eventID, fallback.ts)
+    end
+    self.pendingRaidBonus = nil
 end
 
 function LV.Loot:RecordLootRollStart(rollID)
@@ -1583,12 +1814,24 @@ function LV.Loot:LootItemExclusions(record)
             record.x.items[item.key] = {
                 name = item.name,
                 default = 1,
+                enabled = 1,
+                ts = 0,
             }
             record.x.itemSeed[item.key] = 1
         end
     end
 
     return record.x.items
+end
+
+function LV.Loot:IsLootItemExclusionEnabled(entry)
+    if entry == nil then
+        return false
+    end
+    if type(entry) ~= "table" then
+        return true
+    end
+    return entry.enabled ~= false and tonumber(entry.enabled) ~= 0
 end
 
 function LV.Loot:LootItemExcludeKey(guildKey, row, fallbackName)
@@ -1626,12 +1869,12 @@ function LV.Loot:IsLootItemExcluded(guildKey, row)
     end
 
     local key = self:LootItemExcludeKey(guildKey, row)
-    if key and exclusions[key] then
+    if key and self:IsLootItemExclusionEnabled(exclusions[key]) then
         return true
     end
 
     local itemName = normalizeItemName(rowItemName(guildKey, row))
-    if itemName ~= "" and exclusions["name:" .. itemName] then
+    if itemName ~= "" and self:IsLootItemExclusionEnabled(exclusions["name:" .. itemName]) then
         return true
     end
 
@@ -1708,6 +1951,8 @@ function LV.Loot:ExcludeLootItem(guildKey, row, fallbackName)
     exclusions[key] = {
         name = itemName,
         itemID = tonumber(row.itemID) or nil,
+        enabled = 1,
+        ts = LV.Util:Now(),
     }
 
     local removed = 0
@@ -1750,7 +1995,12 @@ function LV.Loot:UnexcludeLootItem(guildKey, key)
     end
 
     local name = type(entry) == "table" and entry.name or tostring(entry)
-    exclusions[key] = nil
+    exclusions[key] = {
+        name = name,
+        itemID = type(entry) == "table" and tonumber(entry.itemID) or nil,
+        enabled = 0,
+        ts = LV.Util:Now(),
+    }
     LV:Print("Allowed item again: " .. tostring(name or key) .. ". Rebuild loot to restore matching rows.")
     if LV.UI and LV.UI.Refresh then
         LV.UI:Refresh()
@@ -1765,15 +2015,17 @@ function LV.Loot:ExcludedLootItems(guildKey)
     local out = {}
 
     for key, entry in pairs(exclusions or {}) do
-        local name = type(entry) == "table" and entry.name or tostring(entry)
-        if name == "" then
-            name = key
+        if self:IsLootItemExclusionEnabled(entry) then
+            local name = type(entry) == "table" and entry.name or tostring(entry)
+            if name == "" then
+                name = key
+            end
+            out[#out + 1] = {
+                key = key,
+                name = name,
+                default = type(entry) == "table" and entry.default or nil,
+            }
         end
-        out[#out + 1] = {
-            key = key,
-            name = name,
-            default = type(entry) == "table" and entry.default or nil,
-        }
     end
 
     table.sort(out, function(a, b)
@@ -2101,7 +2353,15 @@ function LV.Loot:ScheduleLootHistoryScan(wantedEncounterID)
         return
     end
 
-    local key = tostring(wantedEncounterID or "all")
+    if type(wantedEncounterID) == "table" then
+        wantedEncounterID = wantedEncounterID.encounterID or wantedEncounterID.encounterId or wantedEncounterID.id
+    end
+    wantedEncounterID = tonumber(wantedEncounterID) or self:CurrentOrLastEncounterID()
+    if not wantedEncounterID or wantedEncounterID <= 0 then
+        return
+    end
+
+    local key = tostring(wantedEncounterID)
     self.historyScanSchedule = self.historyScanSchedule or {}
     local now = LV.Util:Now()
     if now - (tonumber(self.historyScanSchedule[key]) or 0) < 5 then
@@ -2203,6 +2463,14 @@ function LV.Loot:ScanEncounterDrops(encounter, encounterID)
             info.difficulty = instance.difficultyName
             info.boss = (boss and boss ~= "" and boss) or info.boss or ""
             info.src = "boss"
+            info.lootHistoryKey = self:LootHistoryKey(encounterID, fieldFromSources({
+                "lootListID",
+                "lootListId",
+                "dropID",
+                "dropId",
+                "rollID",
+                "rollId",
+            }, detail, drop))
             info.dedupeSeconds = 10 * 60
             self:AddLootEvent(info)
         end
@@ -2222,7 +2490,7 @@ function LV.Loot:FindTradeSource(guildKey, fromName, itemLink, tradeTS)
             break
         end
 
-        if row.p == fromID and (row.itemID or 0) == itemID and row.item == itemKey and not row.tr then
+        if row.src ~= "bonus" and row.p == fromID and (row.itemID or 0) == itemID and row.item == itemKey and not row.tr then
             return row
         end
     end
@@ -2244,6 +2512,22 @@ end)
 
 LV:RegisterOptionalEvent("START_LOOT_ROLL", function(_, rollID)
     LV.Loot:RecordLootRollStart(rollID)
+end)
+
+LV:RegisterOptionalEvent("BONUS_ROLL_STARTED", function()
+    LV.Loot:BeginRaidBonusRoll()
+end)
+
+LV:RegisterOptionalEvent("BONUS_ROLL_RESULT", function(_, ...)
+    LV.Loot:RecordRaidBonusResult(...)
+end)
+
+LV:RegisterOptionalEvent("BONUS_ROLL_FAILED", function()
+    LV.Loot.pendingRaidBonus = nil
+end)
+
+LV:RegisterOptionalEvent("BONUS_ROLL_DEACTIVATE", function()
+    LV.Loot.pendingRaidBonus = nil
 end)
 
 LV:RegisterOptionalEvent("LOOT_HISTORY_UPDATE_ENCOUNTER", function(_, encounterID)

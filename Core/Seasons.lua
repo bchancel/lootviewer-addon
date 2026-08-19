@@ -156,6 +156,10 @@ function LV.Seasons:InstanceSeasonID(instanceID, instanceName)
     return seasonsByInstanceName[normalizeInstanceName(instanceName)]
 end
 
+function LV.Seasons:IsKnownRaid(instanceID, instanceName)
+    return self:InstanceSeasonID(instanceID, instanceName) ~= nil
+end
+
 function LV.Seasons:DungeonSeasonID(instanceName, timestamp)
     local byName = dungeonSeasonsByName[normalizeInstanceName(instanceName)]
     if byName then
@@ -172,26 +176,11 @@ function LV.Seasons:IsKnownDungeon(instanceName)
     return dungeonSeasonsByName[normalizeInstanceName(instanceName)] ~= nil
 end
 
-function LV.Seasons:ContextValues(dungeonEnabled)
-    local values = {}
-    for index = #definitions, 1, -1 do
-        local definition = definitions[index]
-        values[#values + 1] = {
-            value = "raid:" .. definition.id,
-            label = definition.shortLabel .. " - Raids",
-        }
-        if dungeonEnabled and #(definition.dungeons or {}) > 0 then
-            values[#values + 1] = {
-                value = "dungeon:" .. definition.id,
-                label = definition.shortLabel .. " - Dungeons",
-            }
-        end
-    end
-    values[#values + 1] = { value = "raid:all", label = "All Seasons - Raids" }
-    if dungeonEnabled then
-        values[#values + 1] = { value = "dungeon:all", label = "All Seasons - Dungeons" }
-    end
-    return values
+function LV.Seasons:ContextValues()
+    return {
+        { value = self:CurrentSeasonID(), label = "Current Season" },
+        { value = "all", label = "All" },
+    }
 end
 
 function LV.Seasons:DungeonFilterValues(seasonID)

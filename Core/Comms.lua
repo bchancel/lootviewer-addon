@@ -80,6 +80,8 @@ function LV.Comms:HandleMessage(prefix, message, channel, sender)
     local kind = parts[1]
     if kind == "S" and LV.Raid then
         LV.Raid:ObserveRemoteSession(parts, sender)
+    elseif kind == "P" and LV.Raid then
+        LV.Raid:ObserveLoggerProbe(parts, sender)
     elseif kind == "T" and LV.Trade then
         LV.Trade:ObserveRemoteTrade(parts, sender)
     elseif LV.DataSync and LV.DataSync:IsSyncKind(kind) then

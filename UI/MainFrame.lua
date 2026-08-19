@@ -25,6 +25,14 @@ local raidDifficultyThresholds = {
 local raidDifficultyRankByAbbreviation = { L = 1, N = 2, H = 3, M = 4 }
 local raidDifficultyRankByValue = { lfr = 1, normal = 2, heroic = 3, mythic = 4 }
 
+local lootRollVisuals = {
+    need = { label = "Need", atlas = "lootroll-rollicon-yourolled-need" },
+    greed = { label = "Greed", atlas = "lootroll-rollicon-yourolled-greed" },
+    transmog = { label = "Transmog", atlas = "lootroll-rollicon-yourolled-transmog" },
+}
+local lootRollGroupOrder = { "need", "greed", "transmog" }
+local unknownLootRollTexture = "Interface\\Icons\\INV_Misc_Dice_01"
+
 local SIDEBAR_WIDTH = 220
 
 local pageDefinitions = {
@@ -37,16 +45,25 @@ local pageDefinitions = {
         label = "Raid History",
         hint = "Raid nights and the attendance recorded for each player.",
         icon = "Interface\\Icons\\INV_Misc_Note_06",
+        context = "raid",
     },
     meter = {
         label = "Attendance Meter",
         hint = "Scrollable attendance totals across recent raid nights.",
         icon = "Interface\\Icons\\Achievement_GuildPerk_EverybodysFriend",
+        context = "raid",
     },
     history = {
         label = "Loot History",
         hint = "Recent loot, season tier tokens, trades, and excluded items.",
         icon = "Interface\\Icons\\INV_Misc_Book_09",
+        context = "raid",
+    },
+    dungeonHistory = {
+        label = "Loot History",
+        hint = "Dungeon loot history and distribution.",
+        icon = "Interface\\Icons\\INV_Misc_Book_09",
+        context = "dungeon",
     },
     sync = {
         label = "Sync",
@@ -55,7 +72,7 @@ local pageDefinitions = {
     },
 }
 
-local pageOrder = { "config", "attendance", "meter", "history", "sync" }
+local pageOrder = { "config", "attendance", "meter", "history", "dungeonHistory", "sync" }
 
 local attendanceStatusValues = {
     { value = "here", label = "Here" },
@@ -177,14 +194,18 @@ function LV.UI:ContextValue()
     LV.Store:InitializeIfNeeded()
     LV.Store.db.c.ui = type(LV.Store.db.c.ui) == "table" and LV.Store.db.c.ui or {}
     local ui = LV.Store.db.c.ui
-    ui.context = ui.context or ("raid:" .. LV.Seasons:CurrentSeasonID())
+    local currentSeasonID = LV.Seasons:CurrentSeasonID()
+    ui.context = ui.context or ("raid:" .. currentSeasonID)
     local contentType, seasonID = tostring(ui.context):match("^(%a+):(.+)$")
     local dungeonEnabled = LV.Store:AccountConfig().dungeonLogging == true
     if (contentType ~= "raid" and contentType ~= "dungeon")
-        or (contentType == "dungeon" and not dungeonEnabled)
-        or (seasonID ~= "all" and not LV.Seasons:IsSeasonID(seasonID)) then
-        ui.context = "raid:" .. LV.Seasons:CurrentSeasonID()
+        or (contentType == "dungeon" and not dungeonEnabled) then
+        contentType = "raid"
     end
+    if seasonID ~= "all" and seasonID ~= currentSeasonID then
+        seasonID = currentSeasonID
+    end
+    ui.context = contentType .. ":" .. seasonID
     return ui.context
 end
 
@@ -208,6 +229,20 @@ function LV.UI:SelectedSeasonFilter()
     return seasonID
 end
 
+function LV.UI:SetSelectedSeasonFilter(seasonID)
+    local contentType = self:ContextParts()
+    seasonID = seasonID == "all" and "all" or LV.Seasons:CurrentSeasonID()
+    self:SetContextValue(contentType .. ":" .. seasonID)
+end
+
+function LV.UI:ResetSeasonOnOpen()
+    local contentType = self:ContextParts()
+    self:SetContextValue(contentType .. ":" .. LV.Seasons:CurrentSeasonID())
+    if self.contextSelector and self.contextSelector.Refresh then
+        self.contextSelector:Refresh()
+    end
+end
+
 function LV.UI:RebuildContextSelector()
     if not self.nav then
         return
@@ -215,19 +250,11 @@ function LV.UI:RebuildContextSelector()
     if self.contextSelector then
         self.contextSelector:Hide()
     end
-    local values = LV.Seasons:ContextValues(LV.Store:AccountConfig().dungeonLogging == true)
+    local values = LV.Seasons:ContextValues()
     local selector = LV.Widgets:Dropdown(self.nav, values, function()
-        return self:ContextValue()
+        return self:SelectedSeasonFilter()
     end, function(value)
-        self:SetContextValue(value)
-        local contentType = tostring(value):match("^(%w+):")
-        if contentType == "dungeon" and self.currentTab ~= "config" then
-            self.currentTab = "history"
-        elseif contentType == "raid" and self.currentTab ~= "config"
-            and self.currentTab ~= "attendance" and self.currentTab ~= "meter"
-            and self.currentTab ~= "history" and self.currentTab ~= "sync" then
-            self.currentTab = "attendance"
-        end
+        self:SetSelectedSeasonFilter(value)
         self.historyView = "recent"
         self.historyOffset = 0
         self:Refresh()
@@ -241,6 +268,7 @@ function LV.UI:Toggle()
     if self.frame:IsShown() then
         self.frame:Hide()
     else
+        self:ResetSeasonOnOpen()
         self.frame:Show()
         self:Refresh()
     end
@@ -388,6 +416,15 @@ function LV.UI:Ensure()
     footer:SetPoint("BOTTOMLEFT", 18, 16)
     footer:SetTextColor(unpack(LV.Widgets.colors.textSecondary))
 
+    local raidNavHeader = nav:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    raidNavHeader:SetText("Raids")
+    raidNavHeader:SetTextColor(unpack(LV.Widgets.colors.navigation))
+    raidNavHeader:SetJustifyH("LEFT")
+    local dungeonNavHeader = nav:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    dungeonNavHeader:SetText("Dungeons")
+    dungeonNavHeader:SetTextColor(unpack(LV.Widgets.colors.navigation))
+    dungeonNavHeader:SetJustifyH("LEFT")
+
     local resizeHandle = LV.Widgets:Button(frame, "//", 24, 24, nil, "ghost")
     resizeHandle:SetPoint("BOTTOMRIGHT", -2, 2)
     resizeHandle:SetFrameLevel(frame:GetFrameLevel() + 80)
@@ -418,6 +455,8 @@ function LV.UI:Ensure()
     self.navButtons = {}
     self.adHocAction = adHocAction
     self.extendAction = extendAction
+    self.raidNavHeader = raidNavHeader
+    self.dungeonNavHeader = dungeonNavHeader
 
     for index, key in ipairs(pageOrder) do
         self:BuildNavButton(key, pageDefinitions[key], index)
@@ -439,19 +478,16 @@ function LV.UI:BuildNavButton(tab, definition, index)
 end
 
 function LV.UI:RefreshNavigation()
-    local dungeon = self:IsDungeonContext()
-    if dungeon and self.currentTab ~= "config" and self.currentTab ~= "history" then
+    local dungeonEnabled = LV.Store:AccountConfig().dungeonLogging == true
+    if self.currentTab == "dungeonHistory" and not dungeonEnabled then
         self.currentTab = "history"
+        self:SetContextValue("raid:" .. self:SelectedSeasonFilter())
     end
 
-    if self.adHocAction then
-        self.adHocAction:SetShown(not dungeon)
+    local visibleOrder = { "config", "attendance", "meter", "history", "sync" }
+    if dungeonEnabled then
+        table.insert(visibleOrder, 5, "dungeonHistory")
     end
-    if self.extendAction then
-        self.extendAction:SetShown(not dungeon)
-    end
-
-    local visibleOrder = dungeon and { "config", "history" } or pageOrder
     local visible = {}
     for _, key in ipairs(visibleOrder) do
         visible[key] = true
@@ -460,12 +496,29 @@ function LV.UI:RefreshNavigation()
         button:SetShown(visible[key] == true)
     end
 
-    local startY = dungeon and -142 or -180
-    for index, key in ipairs(visibleOrder) do
+    local positions = {
+        config = -180,
+        attendance = -242,
+        meter = -284,
+        history = -326,
+        dungeonHistory = -390,
+    }
+    for key, y in pairs(positions) do
         local button = self.navButtons[key]
         button:ClearAllPoints()
-        button:SetPoint("TOPLEFT", 18, startY - ((index - 1) * 42))
+        button:SetPoint("TOPLEFT", 18, y)
     end
+
+    local sync = self.navButtons.sync
+    sync:ClearAllPoints()
+    sync:SetPoint("BOTTOMLEFT", 18, 54)
+
+    self.raidNavHeader:ClearAllPoints()
+    self.raidNavHeader:SetPoint("TOPLEFT", 22, -226)
+    self.raidNavHeader:Show()
+    self.dungeonNavHeader:ClearAllPoints()
+    self.dungeonNavHeader:SetPoint("TOPLEFT", 22, -374)
+    self.dungeonNavHeader:SetShown(dungeonEnabled)
 end
 
 function LV.UI:ShowTextEntryDialog(options)
@@ -600,6 +653,59 @@ function LV.UI:ShowConfirmationDialog(options)
     layer:Raise()
 end
 
+function LV.UI:PromptRaidTeamSelection(teams, onSelect)
+    teams = teams or {}
+    if #teams == 0 then
+        return
+    end
+    if self.raidTeamSelectionModal then
+        self.raidTeamSelectionModal:Hide()
+    end
+
+    local layer = CreateFrame("Frame", nil, UIParent, "BackdropTemplate")
+    layer:SetAllPoints(UIParent)
+    layer:SetFrameStrata("FULLSCREEN_DIALOG")
+    layer:SetFrameLevel(500)
+    layer:SetToplevel(true)
+    layer:EnableMouse(true)
+    LV.Widgets:ApplyBackdrop(layer, LV.Widgets.colors.overlay, LV.Widgets.colors.transparent)
+
+    local modal = CreateFrame("Frame", nil, layer, "BackdropTemplate")
+    modal:SetSize(430, 108 + (#teams * 36))
+    modal:SetPoint("CENTER")
+    modal:SetFrameLevel(layer:GetFrameLevel() + 1)
+    modal:EnableMouse(true)
+    LV.Widgets:ApplyBackdrop(modal, LV.Widgets.colors.canvasAlt, LV.Widgets.colors.borderStrong)
+
+    local title = LV.Widgets:Text(modal, "Choose Raid Team", "large")
+    title:SetPoint("TOPLEFT", 20, -18)
+    local message = LV.Widgets:Text(modal, "Multiple raid teams are active now. Which team is this raid?")
+    message:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -8)
+    message:SetTextColor(unpack(LV.Widgets.colors.textSecondary))
+
+    local y = -66
+    for _, team in ipairs(teams) do
+        local teamID = team.id
+        local label = LV.Util:Trim(team.name) ~= "" and team.name or teamID
+        local button = LV.Widgets:Button(modal, label, 390, 28, function()
+            layer:Hide()
+            if onSelect then
+                onSelect(teamID)
+            end
+        end, "primary")
+        button:SetPoint("TOPLEFT", 20, y)
+        y = y - 36
+    end
+
+    local cancel = LV.Widgets:Button(modal, "Cancel", 88, 26, function()
+        layer:Hide()
+    end, "ghost")
+    cancel:SetPoint("BOTTOMRIGHT", -20, 14)
+    self.raidTeamSelectionModal = layer
+    layer:Show()
+    layer:Raise()
+end
+
 function LV.UI:ToggleAdHocPanel()
     local guildInfo = LV.Guild:CurrentInfo()
     if not guildInfo then
@@ -678,12 +784,17 @@ function LV.UI:SwitchTab(tab)
         end)
         return
     end
+    local definition = pageDefinitions[tab]
+    if definition and definition.context then
+        self:SetContextValue(definition.context .. ":" .. self:SelectedSeasonFilter())
+    end
     self.currentTab = tab
     self:Refresh()
 end
 
 function LV.UI:OpenConfiguration()
     self:Ensure()
+    self:ResetSeasonOnOpen()
     self.frame:Show()
     self:SwitchTab("config")
 end
@@ -741,7 +852,7 @@ function LV.UI:Refresh()
         self:RenderAttendanceMeter()
     elseif self.currentTab == "sync" then
         self:RenderDataSync()
-    elseif self.currentTab == "history" then
+    elseif self.currentTab == "history" or self.currentTab == "dungeonHistory" then
         self:RenderHistory()
     elseif type(self.RenderConfig) == "function" then
         self:RenderConfig()
@@ -1731,10 +1842,16 @@ function LV.UI:RenderAttendanceDetail(parent, guildKey, record)
             target[#target + 1] = value
         end
     end
-    addUnique(zones, seenZones, LV.Store:DictionaryValue(guildKey, "s", raid.z))
+    local function addRaidZone(instanceID, nameID)
+        local name = LV.Store:DictionaryValue(guildKey, "s", nameID)
+        if LV.Seasons:IsKnownRaid(instanceID, name) then
+            addUnique(zones, seenZones, name)
+        end
+    end
+    addRaidZone(raid.iid, raid.z)
     for _, row in ipairs(record.l or {}) do
         if type(row) == "table" and tostring(row.sid or "") == tostring(raid.id or self.attendanceSelectedRaid) then
-            addUnique(zones, seenZones, LV.Store:DictionaryValue(guildKey, "s", row.inst))
+            addRaidZone(row.iid, row.inst)
         end
     end
     for _, kill in ipairs(raid.kills or {}) do
@@ -2493,6 +2610,23 @@ function LV.UI:LootMethodLabel(value)
     return labels[value] or value
 end
 
+function LV.UI:LootRollGroup(value)
+    value = tostring(value or ""):lower()
+    if value == "need" or value == "offspec" then
+        return "need"
+    elseif value == "greed" then
+        return "greed"
+    elseif value == "transmog" or value == "tmog" then
+        return "transmog"
+    end
+    return nil
+end
+
+function LV.UI:LootRollVisual(value)
+    local group = self:LootRollGroup(value)
+    return group, group and lootRollVisuals[group] or nil
+end
+
 function LV.UI:LootBreakdownCount(row)
     local count = 0
     for _, entry in ipairs((row and row.rb) or {}) do
@@ -2560,51 +2694,55 @@ function LV.UI:LootMethodDisplay(row)
     return label
 end
 
-function LV.UI:CreateLootMethodDisplay(parent, row, x, y, width, justify, iconOnly)
+function LV.UI:CreateLootMethodDisplay(parent, guildKey, row, x, y, width, justify, iconOnly)
     local method = self:LootMethodDisplay(row)
-    local iconTextures = {
-        Need = "Interface\\Buttons\\UI-GroupLoot-Dice-Up",
-        OSpec = "Interface\\Buttons\\UI-GroupLoot-Dice-Up",
-        Greed = "Interface\\Buttons\\UI-GroupLoot-Coin-Up",
-        Tmog = "Interface\\Icons\\INV_Misc_EngGizmos_19",
-        Pass = "Interface\\Buttons\\UI-GroupLoot-Pass-Up",
-    }
+    local winnerRoll = self:LootWinnerRoll(row) or (row and row.r)
+    local _, rollVisual = self:LootRollVisual(winnerRoll)
     local host = CreateFrame("Frame", nil, parent)
     host:SetPoint("TOPLEFT", x, y)
     host:SetSize(width, 18)
     host:EnableMouse(true)
-    local texture = iconTextures[method]
-    if texture then
-        local icon = host:CreateTexture(nil, "ARTWORK")
-        icon:SetTexture(texture)
-        icon:SetSize(16, 16)
-        if iconOnly then
-            icon:SetPoint("CENTER")
-        else
-            icon:SetPoint(justify == "RIGHT" and "RIGHT" or "LEFT")
-        end
+    local icon = host:CreateTexture(nil, "ARTWORK")
+    icon:SetSize(16, 16)
+    if rollVisual and icon.SetAtlas then
+        icon:SetAtlas(rollVisual.atlas, false)
+    else
+        icon:SetTexture(unknownLootRollTexture)
         icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-        host.icon = icon
     end
+    if iconOnly then
+        icon:SetPoint("CENTER")
+    else
+        icon:SetPoint(justify == "RIGHT" and "RIGHT" or "LEFT")
+    end
+    host.icon = icon
     if not iconOnly then
         local label = LV.Widgets:Text(host, method)
         if justify == "RIGHT" then
-            label:SetPoint("RIGHT", texture and -20 or 0, 0)
+            label:SetPoint("RIGHT", -20, 0)
             label:SetJustifyH("RIGHT")
         else
-            label:SetPoint("LEFT", texture and 20 or 0, 0)
+            label:SetPoint("LEFT", 20, 0)
         end
-        label:SetWidth(math.max(1, width - (texture and 20 or 0)))
+        label:SetWidth(math.max(1, width - 20))
         label:SetWordWrap(false)
     end
-    if method ~= "" then
-        host:SetScript("OnEnter", function()
-            GameTooltip:SetOwner(host, "ANCHOR_RIGHT")
+    host:SetScript("OnEnter", function()
+        GameTooltip:SetOwner(host, "ANCHOR_RIGHT")
+        if self:LootBreakdownCount(row) > 0 then
+            local color = LV.Widgets.colors.yellow
+            GameTooltip:SetText("LootViewer Rolls", color[1], color[2], color[3])
+            self:AddLootBreakdownTooltip(guildKey, row, false)
+        elseif row and row.src == "bonus" then
+            GameTooltip:SetText("Bonus Roll")
+        elseif method ~= "" then
             GameTooltip:SetText("Loot roll: " .. method)
-            GameTooltip:Show()
-        end)
-        host:SetScript("OnLeave", function() GameTooltip:Hide() end)
-    end
+        else
+            GameTooltip:SetText("No roll details recorded")
+        end
+        GameTooltip:Show()
+    end)
+    host:SetScript("OnLeave", function() GameTooltip:Hide() end)
     return host
 end
 
@@ -2722,7 +2860,10 @@ end
 
 function LV.UI:LootDifficultyDisplay(guildKey, row)
     local difficulty = LV.Store:DictionaryValue(guildKey, "s", row and row.diff)
-    local difficultyID = tonumber(row and row.did) or 0
+    local difficultyID = tonumber(row and row.src == "bonus" and row.bdid) or tonumber(row and row.did) or 0
+    if row and row.src == "bonus" and difficultyID > 0 then
+        return difficultyLabels[difficultyID] or tostring(difficultyID)
+    end
     if difficultyID == 250 or tostring(difficulty or ""):lower() == "world" then
         return "Raid Finder"
     end
@@ -2749,13 +2890,16 @@ function LV.UI:TierHistoryGroups(guildKey, seasonFilter, typeFilter)
     for index = #((record and record.l) or {}), 1, -1 do
         local row = record.l[index]
         local token = LV.Tier:TokenForRow(guildKey, row)
+        local groupType = token and LV.Tier:GroupTypeForRow(guildKey, row, token) or nil
         if token
             and token.seasonID == seasonID
             and seasonID == LV.Seasons:EventSeasonID(guildKey, record, row)
             and self:EventMatchesRaidTag(record, row, self.historyTeamID)
             and self:EventMeetsMinimumDifficulty(guildKey, record, row)
-            and (typeFilter == "all" or token.type == typeFilter) then
-            local group = groups[token.type]
+            and row.src ~= "bonus"
+            and not (LV.Loot and LV.Loot.IsWarboundRow and LV.Loot:IsWarboundRow(guildKey, row))
+            and (typeFilter == "all" or groupType == typeFilter) then
+            local group = groups[groupType]
             if group then
                 group.rows[#group.rows + 1] = {
                     loot = row,
@@ -2791,26 +2935,62 @@ function LV.UI:LootSearchText(guildKey, row)
     return table.concat(parts, " "):lower()
 end
 
-function LV.UI:FilteredHistoryRows(guildKey)
+function LV.UI:CreateHistorySearch(parent, stateKey, x, y)
+    local searchText = LV.Util:Trim(self[stateKey] or "")
+    local searchLabel = LV.Widgets:Label(parent, "Search")
+    searchLabel:SetPoint("TOPLEFT", x or 24, y or -245)
+
+    local function commitSearch(value)
+        value = LV.Util:Trim(value or "")
+        if value ~= LV.Util:Trim(self[stateKey] or "") then
+            self[stateKey] = value
+            self.historyOffset = 0
+            self:Refresh()
+        end
+    end
+
+    local search = LV.Widgets:EditBox(parent, 240, 24, commitSearch)
+    search:SetText(searchText)
+    search:SetPoint("LEFT", searchLabel, "RIGHT", 12, 0)
+
+    local clear = LV.Widgets:Button(parent, "Clear", 58, 24, function()
+        self[stateKey] = ""
+        self.historyOffset = 0
+        search:SetText("")
+        search:ClearFocus()
+        self:Refresh()
+    end)
+    clear:SetPoint("LEFT", search, "RIGHT", 8, 0)
+
+    return searchText
+end
+
+function LV.UI:FilteredHistoryRows(guildKey, sourceFilter)
     local record = LV.Store:GuildRecord(guildKey)
     local query = LV.Util:Trim(self.historySearch or ""):lower()
     local rows = {}
+    local total = 0
+    sourceFilter = sourceFilter == "bonus" and "bonus" or "regular"
 
     for index = #record.l, 1, -1 do
         local row = record.l[index]
         if type(row) == "table" then
             local excluded = LV.Loot and LV.Loot.IsLootItemExcluded and LV.Loot:IsLootItemExcluded(guildKey, row)
+            local warbound = LV.Loot and LV.Loot.IsWarboundRow and LV.Loot:IsWarboundRow(guildKey, row)
+            local sourceMatches = (row.src == "bonus") == (sourceFilter == "bonus")
             local inSeason = LV.Seasons:EventMatchesFilter(guildKey, record, row, self:SelectedSeasonFilter())
             local inTeam = self:EventMatchesRaidTag(record, row, self.historyTeamID)
             local inDifficulty = self:EventMeetsMinimumDifficulty(guildKey, record, row)
-            if inSeason and inTeam and inDifficulty and not excluded
-                and (query == "" or self:LootSearchText(guildKey, row):find(query, 1, true)) then
-                rows[#rows + 1] = row
+            if inSeason and inTeam and inDifficulty and sourceMatches and not excluded and not warbound then
+                total = total + 1
+                if query == "" or self:LootSearchText(guildKey, row):find(query, 1, true) then
+                    rows[#rows + 1] = row
+                end
             end
         end
     end
 
-    return rows
+    return rows, total
 end
 
 function LV.UI:ScrollHistoryRows(delta)
@@ -3014,6 +3194,7 @@ function LV.UI:ShowLootItemActions(guildKey, row)
     local excludeCell = cell(20, -152)
     cell(331, -152)
 
+    local isBonusLoot = row and row.src == "bonus"
     local recipientValues = self:RaidLootRecipientValues(guildKey, row)
     local selectedRecipient = recipientValues[1] and recipientValues[1].value or nil
     local recipientDropdownValues = recipientValues
@@ -3021,25 +3202,34 @@ function LV.UI:ShowLootItemActions(guildKey, row)
         recipientDropdownValues = { { value = "none", label = "No other raid members" } }
         selectedRecipient = "none"
     end
-    local recipient = LV.Widgets:Dropdown(recipientCell, recipientDropdownValues, function()
-        return selectedRecipient
-    end, function(value)
-        selectedRecipient = value
-    end, 255, 10)
-    recipient:SetPoint("CENTER")
+    if isBonusLoot then
+        local personal = LV.Widgets:Text(tradeCell, "Personal bonus loot")
+        personal:SetPoint("CENTER")
+        personal:SetTextColor(unpack(LV.Widgets.colors.muted))
+        local noTrade = LV.Widgets:Text(recipientCell, "Cannot be traded")
+        noTrade:SetPoint("CENTER")
+        noTrade:SetTextColor(unpack(LV.Widgets.colors.muted))
+    else
+        local recipient = LV.Widgets:Dropdown(recipientCell, recipientDropdownValues, function()
+            return selectedRecipient
+        end, function(value)
+            selectedRecipient = value
+        end, 255, 10)
+        recipient:SetPoint("CENTER")
 
-    local trade = LV.Widgets:Button(tradeCell, "Trade Item", 255, 30, function()
-        if selectedRecipient == "none" or not selectedRecipient then
-            LV:Print("No other raid member is available for this trade.")
-            return
-        end
-        if LV.Trade and LV.Trade.RecordManualTrade
-            and LV.Trade:RecordManualTrade(guildKey, row, selectedRecipient) then
-            layer:Hide()
-        end
-    end, "success")
-    trade:SetPoint("CENTER")
-    LV.Widgets:SetTooltip(trade, "Record this item as traded to the selected raid member.")
+        local trade = LV.Widgets:Button(tradeCell, "Trade Item", 255, 30, function()
+            if selectedRecipient == "none" or not selectedRecipient then
+                LV:Print("No other raid member is available for this trade.")
+                return
+            end
+            if LV.Trade and LV.Trade.RecordManualTrade
+                and LV.Trade:RecordManualTrade(guildKey, row, selectedRecipient) then
+                layer:Hide()
+            end
+        end, "success")
+        trade:SetPoint("CENTER")
+        LV.Widgets:SetTooltip(trade, "Record this item as traded to the selected raid member.")
+    end
 
     local exclude = LV.Widgets:Button(excludeCell, "Exclude Loot", 255, 30, function()
         layer:Hide()
@@ -3058,41 +3248,123 @@ function LV.UI:CreateHistoryLootOptionsButton(parent, guildKey, row, x, y, width
         self:ShowLootItemActions(guildKey, row)
     end)
     button:SetPoint("TOPLEFT", x, y + 1)
-    LV.Widgets:SetTooltip(button, "Trade or exclude this loot item.")
+    LV.Widgets:SetTooltip(button, row and row.src == "bonus"
+        and "View or exclude this personal bonus loot."
+        or "Trade or exclude this loot item.")
     self:AttachHistoryScroll(button)
     return button
 end
 
-function LV.UI:AddLootBreakdownTooltip(guildKey, row)
+function LV.UI:AddLootBreakdownTooltip(guildKey, row, includeHeader)
     if type(row) ~= "table" or type(row.rb) ~= "table" or #row.rb == 0 then
         return
     end
 
-    GameTooltip:AddLine(" ")
-    GameTooltip:AddLine("LootViewer Rolls", unpack(LV.Widgets.colors.yellow))
+    if includeHeader ~= false then
+        GameTooltip:AddLine(" ")
+        GameTooltip:AddLine("LootViewer Rolls", unpack(LV.Widgets.colors.yellow))
+    end
 
-    local shown = 0
+    local function entryName(entry)
+        return LV.Util:ShortName(LV.Store:DictionaryValue(guildKey, "n", entry.p))
+    end
+
+    local function sortEntries(entries)
+        table.sort(entries, function(a, b)
+            local aWinner = a.w and 1 or 0
+            local bWinner = b.w and 1 or 0
+            if aWinner ~= bWinner then
+                return aWinner > bWinner
+            end
+            local aRoll = tonumber(a.raw) or -1
+            local bRoll = tonumber(b.raw) or -1
+            if aRoll ~= bRoll then
+                return aRoll > bRoll
+            end
+            return entryName(a):lower() < entryName(b):lower()
+        end)
+    end
+
+    local function addEntry(entry, includeMethod)
+        local name = entryName(entry)
+        local method = includeMethod and self:LootMethodLabel(entry.r) or ""
+        local raw = tostring(entry.raw or "")
+        local detail = method
+        if raw ~= "" then
+            detail = detail ~= "" and (detail .. " - " .. raw) or raw
+        end
+        if entry.w then
+            detail = raw ~= "" and ("Winner - " .. raw) or "Winner"
+            if includeMethod and method ~= "" then
+                detail = "Winner - " .. method .. (raw ~= "" and (" " .. raw) or "")
+            end
+        end
+        local color = self:ClassColorForName(guildKey, entry.p)
+        GameTooltip:AddDoubleLine(name, detail, color[1], color[2], color[3], 0.72, 0.74, 0.80)
+    end
+
+    local winnerRoll = self:LootWinnerRoll(row) or row.r
+    local winnerGroup = self:LootRollGroup(winnerRoll)
+    if not winnerGroup then
+        local entries = {}
+        for _, entry in ipairs(row.rb) do
+            if type(entry) == "table" and entry.p then
+                entries[#entries + 1] = entry
+            end
+        end
+        sortEntries(entries)
+        for _, entry in ipairs(entries) do
+            addEntry(entry, true)
+        end
+        return
+    end
+
+    local groups = { need = {}, greed = {}, transmog = {}, unknown = {} }
     for _, entry in ipairs(row.rb) do
         if type(entry) == "table" and entry.p then
-            shown = shown + 1
-            if shown > 12 then
-                GameTooltip:AddLine("+" .. tostring(#row.rb - 12) .. " more", unpack(LV.Widgets.colors.muted))
-                break
+            local method = tostring(entry.r or ""):lower()
+            local group = self:LootRollGroup(method)
+            if group then
+                groups[group][#groups[group] + 1] = entry
+            elseif entry.w and method ~= "pass" and method ~= "noroll" then
+                -- Older roll breakdowns can identify the winner without storing
+                -- their per-player method. The loot row still preserves the
+                -- winning method, so it is safe to apply that method to the
+                -- explicitly flagged winner only.
+                groups[winnerGroup][#groups[winnerGroup] + 1] = entry
+            elseif method ~= "pass" and method ~= "noroll" then
+                groups.unknown[#groups.unknown + 1] = entry
             end
+        end
+    end
 
-            local name = LV.Util:ShortName(LV.Store:DictionaryValue(guildKey, "n", entry.p))
-            local method = self:LootMethodLabel(entry.r)
-            local raw = tostring(entry.raw or "")
-            local detail = method
-            if raw ~= "" then
-                detail = detail ~= "" and (detail .. " " .. raw) or raw
+    local displayedGroup = false
+    for _, group in ipairs(lootRollGroupOrder) do
+        local entries = groups[group]
+        if #entries > 0 then
+            if displayedGroup then
+                GameTooltip:AddLine(" ")
             end
-            if entry.w then
-                detail = detail ~= "" and ("Winner - " .. detail) or "Winner"
+            displayedGroup = true
+            sortEntries(entries)
+            local visual = lootRollVisuals[group]
+            GameTooltip:AddLine("|A:" .. visual.atlas .. ":16:16|a " .. visual.label,
+                unpack(LV.Widgets.colors.yellow))
+            for _, entry in ipairs(entries) do
+                addEntry(entry, false)
             end
+        end
+    end
 
-            local color = self:ClassColorForName(guildKey, entry.p)
-            GameTooltip:AddDoubleLine(name, detail, color[1], color[2], color[3], 0.72, 0.74, 0.80)
+    if #groups.unknown > 0 then
+        if displayedGroup then
+            GameTooltip:AddLine(" ")
+        end
+        sortEntries(groups.unknown)
+        GameTooltip:AddLine("|T" .. unknownLootRollTexture .. ":16:16|t Unclassified",
+            unpack(LV.Widgets.colors.yellow))
+        for _, entry in ipairs(groups.unknown) do
+            addEntry(entry, false)
         end
     end
 end
@@ -3151,7 +3423,7 @@ function LV.UI:RenderDataSync()
 
     self:SetPageHeader("Data Sync", pageDefinitions.sync.hint, guildInfo)
 
-    local panel = LV.Widgets:Section(self.content, "Send Current Guild Data", 216)
+    local panel = LV.Widgets:Section(self.content, "Two-Way Guild Merge", 216)
     panel:SetPoint("TOPLEFT", 22, -102)
     panel:SetPoint("RIGHT", -22, 0)
 
@@ -3170,7 +3442,7 @@ function LV.UI:RenderDataSync()
     end, "primary")
     send:SetPoint("LEFT", target, "RIGHT", 12, 0)
 
-    local hint = LV.Widgets:Text(panel, "Sends guild config plus attendance, loot, and trades from the last 2 months after they accept.")
+    local hint = LV.Widgets:Text(panel, "Merges both players' attendance, loot, trades, and excluded-item rules from the last 2 months. Your shared guild config is used.")
     hint:SetTextColor(unpack(LV.Widgets.colors.muted))
     hint:SetPoint("TOPLEFT", 24, -88)
 
@@ -3190,16 +3462,22 @@ function LV.UI:RenderDataSync()
 
     local y = -48
     if outbound then
-        local text = LV.Widgets:Text(detail, "Sending to " .. tostring(outbound.target or "") .. " - " .. tostring(outbound.state or ""))
+        local text = LV.Widgets:Text(detail, "Sync with " .. tostring(outbound.target or "") .. " - " .. tostring(outbound.state or ""))
         text:SetPoint("TOPLEFT", 24, y)
         y = y - 28
         local counts = LV.Widgets:Text(detail, LV.DataSync:FormatCounts(outbound.counts))
         counts:SetTextColor(unpack(LV.Widgets.colors.muted))
         counts:SetPoint("TOPLEFT", 24, y)
         y = y - 28
+        if outbound.returnImported then
+            local imported = LV.Widgets:Text(detail, "Received " .. LV.DataSync:FormatCounts(outbound.returnImported))
+            imported:SetTextColor(unpack(LV.Widgets.colors.muted))
+            imported:SetPoint("TOPLEFT", 24, y)
+            y = y - 28
+        end
     end
     if inbound then
-        local text = LV.Widgets:Text(detail, "Receiving from " .. tostring(inbound.sender or "") .. " - " .. tostring(inbound.state or ""))
+        local text = LV.Widgets:Text(detail, "Sync with " .. tostring(inbound.sender or "") .. " - " .. tostring(inbound.state or ""))
         text:SetPoint("TOPLEFT", 24, y)
         y = y - 28
         if inbound.imported then
@@ -3392,12 +3670,13 @@ function LV.UI:RenderHistory()
     tabHost:SetHeight(38)
     local tabs = {
         { key = "recent", label = "Recent" },
+        { key = "bonus", label = "Bonus Rolls" },
         { key = "distribution", label = "Distribution" },
         { key = "trades", label = "Trades" },
         { key = "exclusions", label = "Exclusions" },
     }
     if self.historySeason ~= "all" then
-        table.insert(tabs, 3, { key = "tier", label = "Tier" })
+        table.insert(tabs, 4, { key = "tier", label = "Tier" })
     elseif self.historyView == "tier" then
         self.historyView = "recent"
     end
@@ -3468,50 +3747,26 @@ function LV.UI:RenderHistory()
         return
     end
 
-    if LV.Loot and LV.Loot.ScheduleLootHistoryScan then
+    if self.historyView == "recent" and LV.Loot and LV.Loot.ScheduleLootHistoryScan then
         LV.Loot:ScheduleLootHistoryScan()
     end
-    local rows = self:FilteredHistoryRows(guildInfo.key)
+    local sourceFilter = self.historyView == "bonus" and "bonus" or "regular"
+    local rows, totalRows = self:FilteredHistoryRows(guildInfo.key, sourceFilter)
     self.historyRowsCount = #rows
     self.historyOffset = tonumber(self.historyOffset) or 0
     if self.historyOffset >= #rows then
         self.historyOffset = math.max(0, #rows - HISTORY_PAGE_SIZE)
     end
 
-    local searchText = LV.Util:Trim(self.historySearch or "")
-    local searchLabel = LV.Widgets:Label(self.content, "Search")
-    searchLabel:SetPoint("TOPLEFT", 24, -245)
-    local function commitSearch(box)
-        local value = LV.Util:Trim(box and box:GetText() or "")
-        if value ~= LV.Util:Trim(self.historySearch or "") then
-            self.historySearch = value
-            self.historyOffset = 0
-            self:Refresh()
-        end
-    end
-    local search = LV.Widgets:EditBox(self.content, 240, 24)
-    search:SetText(searchText)
-    search:SetPoint("LEFT", searchLabel, "RIGHT", 12, 0)
-    search:SetScript("OnEnterPressed", function(box)
-        commitSearch(box)
-        box:ClearFocus()
-    end)
-    search:SetScript("OnEditFocusLost", commitSearch)
+    local searchText = self:CreateHistorySearch(self.content, "historySearch", 24, -245)
 
-    local clear = LV.Widgets:Button(self.content, "Clear", 58, 24, function()
-        self.historySearch = ""
-        self.historyOffset = 0
-        self:Refresh()
-    end)
-    clear:SetPoint("LEFT", search, "RIGHT", 8, 0)
-
-    local history = LV.Widgets:Section(self.content, "Loot", 398)
+    local history = LV.Widgets:Section(self.content, self.historyView == "bonus" and "Bonus Rolls" or "Loot", 398)
     history:SetPoint("TOPLEFT", 22, -280)
     history:SetPoint("BOTTOMRIGHT", -22, 22)
     self:AttachHistoryScroll(history)
-    local pageLabel = (searchText ~= "" or #rows ~= #record.l)
-        and (tostring(#rows) .. " of " .. tostring(#record.l) .. " loot event(s)")
-        or (tostring(#record.l) .. " loot event(s)")
+    local pageLabel = searchText ~= ""
+        and (tostring(#rows) .. " of " .. tostring(totalRows) .. " loot event(s)")
+        or (tostring(totalRows) .. " loot event(s)")
     local page = LV.Widgets:Text(history.header, pageLabel)
     page:SetTextColor(unpack(LV.Widgets.colors.muted))
     page:SetPoint("RIGHT", -18, 0)
@@ -3543,7 +3798,7 @@ function LV.UI:RenderTierHistory(parent, guildKey, seasonFilter, typeFilter)
     self:CreateHistoryColumnHeader(parent, "Slot", 214, 68)
     self:CreateHistoryColumnHeader(parent, "Token", 292, 244)
     self:CreateHistoryColumnHeader(parent, "Difficulty", 546, 88)
-    self:CreateHistoryColumnHeader(parent, "Method", 644, 60, "RIGHT")
+    self:CreateHistoryColumnHeader(parent, "Roll", 644, 60, "CENTER")
 
     local scroll, scrollContent = LV.Widgets:ScrollFrame(parent)
     scroll:SetPoint("TOPLEFT", 12, -58)
@@ -3598,7 +3853,7 @@ function LV.UI:RenderTierHistory(parent, guildKey, seasonFilter, typeFilter)
                 difficulty:SetWordWrap(false)
                 difficulty:SetTextColor(unpack(LV.Widgets.colors.text))
 
-                self:CreateLootMethodDisplay(scrollContent, row, 632, y, 60, "RIGHT")
+                self:CreateLootMethodDisplay(scrollContent, guildKey, row, 632, y, 60, "RIGHT", true)
                 y = y - 26
             end
         end
@@ -3749,7 +4004,7 @@ function LV.UI:RenderLootRows(parent, guildKey, rows, offset)
         bossText:SetWordWrap(false)
         bossText:SetTextColor(unpack(LV.Widgets.colors.text))
 
-        self:CreateLootMethodDisplay(parent, row, methodX, y, methodWidth, "CENTER", true)
+        self:CreateLootMethodDisplay(parent, guildKey, row, methodX, y, methodWidth, "CENTER", true)
         self:CreateHistoryLootOptionsButton(parent, guildKey, row, optionsX, y, optionsWidth)
         y = y - 22
     end

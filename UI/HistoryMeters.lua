@@ -16,8 +16,8 @@ local distributionLabels = {
     heroic = "Heroic",
     mythic = "Mythic",
     champion = "Champion (0-5)",
-    hero = "Hero (6-10)",
-    myth = "Myth (Bonus Roll)",
+    hero = "Hero (6-9)",
+    myth = "Myth (M+10 Bonus Roll)",
 }
 
 local dungeonBuckets = { "champion", "hero", "myth" }
@@ -112,7 +112,8 @@ function LV.UI:RaidLootDistributionRows(guildKey)
         local bucket = difficulty == "L" and "lfr" or difficulty == "N" and "normal"
             or difficulty == "H" and "heroic" or difficulty == "M" and "mythic" or nil
         local excluded = LV.Loot and LV.Loot.IsLootItemExcluded and LV.Loot:IsLootItemExcluded(guildKey, row)
-        if bucket and not excluded
+        local warbound = LV.Loot and LV.Loot.IsWarboundRow and LV.Loot:IsWarboundRow(guildKey, row)
+        if bucket and row.src ~= "bonus" and not excluded and not warbound
             and LV.Seasons:EventMatchesFilter(guildKey, record, row, self:SelectedSeasonFilter())
             and self:EventMatchesRaidTag(record, row, self.historyTeamID)
             and self:EventMeetsMinimumDifficulty(guildKey, record, row) then
@@ -150,7 +151,8 @@ function LV.UI:DungeonLootRows()
     local seasonID = self:SelectedSeasonFilter()
     local rows = {}
     for _, row in ipairs(record.l or {}) do
-        if type(row) == "table" and seasonMatches(row, seasonID) then
+        if type(row) == "table" and seasonMatches(row, seasonID)
+            and not (LV.Dungeons and LV.Dungeons.IsWarboundRow and LV.Dungeons:IsWarboundRow(row)) then
             rows[#rows + 1] = row
         end
     end
@@ -158,6 +160,52 @@ function LV.UI:DungeonLootRows()
         return (tonumber(a.ts) or 0) > (tonumber(b.ts) or 0)
     end)
     return rows, record, dungeonRuns(record)
+end
+
+function LV.UI:DungeonLootSearchText(row, runs)
+    local run = (runs or {})[row and row.run] or {}
+    local itemName = dungeonItemDisplay(row)
+    local itemKey = LV.Store:DungeonDictionaryValue("i", row and row.item)
+    local looter = LV.Store:DungeonDictionaryValue("n", row and row.p)
+    local owner = LV.Store:DungeonDictionaryValue("n", row and (row.o or row.p))
+    local dungeon = LV.Store:DungeonDictionaryValue("s", run.z)
+    local boss = LV.Store:DungeonDictionaryValue("s", row and row.boss)
+    local level = tonumber(run.lvl) or 0
+    local key = (run.m0 or level == 0) and "M0 Mythic 0" or ("+" .. level .. " M+ Mythic Plus")
+    local source = row and row.src == "bonus"
+        and ("Bonus " .. specName(row.spec))
+        or (boss ~= "" and boss or "End chest")
+    local parts = {
+        date("%m/%d %H:%M", tonumber(row and row.ts) or 0),
+        looter,
+        LV.Util:ShortName(looter),
+        owner,
+        LV.Util:ShortName(owner),
+        itemName,
+        itemKey,
+        tostring(row and row.itemID or ""),
+        dungeon,
+        key,
+        source,
+        row and row.track or "",
+    }
+    return table.concat(parts, " "):lower()
+end
+
+function LV.UI:FilteredDungeonLootRows()
+    local allRows, record, runs = self:DungeonLootRows()
+    local query = LV.Util:Trim(self.dungeonHistorySearch or ""):lower()
+    if query == "" then
+        return allRows, record, runs, #allRows
+    end
+
+    local rows = {}
+    for _, row in ipairs(allRows) do
+        if self:DungeonLootSearchText(row, runs):find(query, 1, true) then
+            rows[#rows + 1] = row
+        end
+    end
+    return rows, record, runs, #allRows
 end
 
 function LV.UI:DungeonLootDistributionRows()
@@ -394,8 +442,12 @@ function LV.UI:RenderRaidLootDistribution(parent, guildKey)
 end
 
 function LV.UI:RenderDungeonRecent(parent)
-    local rows, record, runs = self:DungeonLootRows()
-    local count = LV.Widgets:Text(parent.header, tostring(#rows) .. " item(s)")
+    local rows, record, runs, total = self:FilteredDungeonLootRows()
+    local searchText = LV.Util:Trim(self.dungeonHistorySearch or "")
+    local countText = searchText ~= ""
+        and (tostring(#rows) .. " of " .. tostring(total) .. " item(s)")
+        or (tostring(total) .. " item(s)")
+    local count = LV.Widgets:Text(parent.header, countText)
     count:SetPoint("RIGHT", -18, 0)
     count:SetTextColor(unpack(LV.Widgets.colors.muted))
     self:CreateHistoryColumnHeader(parent, "Date", 24, 78)
@@ -405,7 +457,10 @@ function LV.UI:RenderDungeonRecent(parent)
     self:CreateHistoryColumnHeader(parent, "M+", 562, 34)
     self:CreateHistoryColumnHeader(parent, "Source / Loot Spec", 606, 130)
     if #rows == 0 then
-        local empty = LV.Widgets:Text(parent, "No dungeon gear recorded for this season yet.")
+        local message = searchText ~= ""
+            and "No dungeon gear matches your search."
+            or "No dungeon gear recorded for this season yet."
+        local empty = LV.Widgets:Text(parent, message)
         empty:SetPoint("TOPLEFT", 24, -70)
         empty:SetTextColor(unpack(LV.Widgets.colors.muted))
         return
@@ -595,10 +650,12 @@ function LV.UI:RenderDungeonHistory()
         LV.Widgets:SetButtonActive(tab, self.historyView == key)
         previous = tab
     end
-    local contentTop = -132
+    local contentTop = -174
     if self.historyView == "distribution" then
         self:RenderDungeonDistributionFilters(dungeonValues)
         contentTop = -238
+    else
+        self:CreateHistorySearch(self.content, "dungeonHistorySearch", 24, -139)
     end
     local panel = LV.Widgets:Section(self.content, self.historyView == "distribution" and "Gear by Final Owner" or "Dungeon Gear", 440)
     panel:SetPoint("TOPLEFT", 22, contentTop)

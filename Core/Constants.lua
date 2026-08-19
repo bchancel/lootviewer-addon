@@ -12,7 +12,7 @@ LV.Constants = {
     SESSION_IDLE_SECONDS = 8 * 60 * 60,
     DEFAULTS = {
         account = {
-            dungeonLogging = false,
+            dungeonLogging = true,
             autoPugRaids = false,
         },
         cfg = {

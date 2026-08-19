@@ -1,6 +1,7 @@
 local _, LV = ...
 
 LV.Util = {}
+LV.Util.itemWarboundCache = {}
 
 function LV.Util:Trim(value)
     value = tostring(value or "")
@@ -255,6 +256,120 @@ end
 function LV.Util:IsItemBoE(itemLink)
     local bindType = self:GetItemBindType(itemLink)
     return bindType ~= nil and bindType == LE_ITEM_BIND_ON_EQUIP
+end
+
+function LV.Util:IsItemWarbound(itemLink)
+    itemLink = tostring(itemLink or "")
+    if itemLink == "" then
+        return false
+    end
+
+    local cacheKey = self:ItemKey(itemLink)
+    if self.itemWarboundCache[cacheKey] then
+        return true
+    end
+    if not C_TooltipInfo or type(C_TooltipInfo.GetHyperlink) ~= "function" then
+        return false
+    end
+
+    local ok, tooltip = pcall(C_TooltipInfo.GetHyperlink, itemLink)
+    if not ok or type(tooltip) ~= "table" or type(tooltip.lines) ~= "table" then
+        return false
+    end
+
+    local function isReadable(value, expectedType)
+        if type(value) ~= expectedType then
+            return false
+        end
+        if type(issecretvalue) == "function" and issecretvalue(value) then
+            return false
+        end
+        return true
+    end
+
+    local bindingEnum = Enum and Enum.TooltipDataItemBinding
+    local accountUntilEquipped = bindingEnum and bindingEnum.AccountUntilEquipped or 9
+    local bindToAccountUntilEquipped = bindingEnum and bindingEnum.BindToAccountUntilEquipped or 10
+    local bindingText = {}
+    local function addBindingText(value)
+        if type(value) == "string" and value ~= "" then
+            bindingText[value] = true
+        end
+    end
+    addBindingText(ITEM_ACCOUNTBOUND_UNTIL_EQUIP)
+    addBindingText(ITEM_BIND_TO_ACCOUNT_UNTIL_EQUIP)
+
+    for _, line in ipairs(tooltip.lines) do
+        if type(line) == "table" then
+            local bonding = line.bonding
+            if (isReadable(bonding, "number")
+                    and (bonding == accountUntilEquipped or bonding == bindToAccountUntilEquipped))
+                or (isReadable(line.leftText, "string") and bindingText[line.leftText])
+                or (isReadable(line.rightText, "string") and bindingText[line.rightText]) then
+                self.itemWarboundCache[cacheKey] = true
+                return true
+            end
+        end
+    end
+    return false
+end
+
+local function escapeLuaPattern(value)
+    return tostring(value or ""):gsub("([%(%)%.%%%+%-%*%?%[%]%^%$])", "%%%1")
+end
+
+local function lootFormatPattern(formatText, captureFirstString)
+    formatText = tostring(formatText or "")
+    if formatText == "" then
+        return nil
+    end
+
+    local pieces = { "^" }
+    local cursor = 1
+    local stringIndex = 0
+    while cursor <= #formatText do
+        local startAt, endAt, kind = formatText:find("%%[%d%$]*([sd])", cursor)
+        if not startAt then
+            pieces[#pieces + 1] = escapeLuaPattern(formatText:sub(cursor))
+            break
+        end
+        pieces[#pieces + 1] = escapeLuaPattern(formatText:sub(cursor, startAt - 1))
+        if kind == "s" then
+            stringIndex = stringIndex + 1
+            pieces[#pieces + 1] = captureFirstString and stringIndex == 1 and "(.+)" or ".-"
+        else
+            pieces[#pieces + 1] = "%d+"
+        end
+        cursor = endAt + 1
+    end
+    pieces[#pieces + 1] = "$"
+    return table.concat(pieces)
+end
+
+function LV.Util:ExtractBonusLoot(message)
+    message = tostring(message or "")
+    if message == "" then
+        return nil, nil
+    end
+
+    local itemLink = message:match("(|c%x+|Hitem:.-|h.-|h|r)")
+        or message:match("(|Hitem:.-|h.-|h)")
+    if not itemLink then
+        return nil, nil
+    end
+
+    local selfPattern = lootFormatPattern(LOOT_ITEM_BONUS_ROLL_SELF, false)
+    if (selfPattern and message:match(selfPattern)) or message:find("^You receive bonus loot:") then
+        return self:PlayerFullName(), itemLink
+    end
+
+    local otherPattern = lootFormatPattern(LOOT_ITEM_BONUS_ROLL, true)
+    local player = otherPattern and message:match(otherPattern)
+        or message:match("^(.+) receives bonus loot:")
+    if not player or player == "" then
+        return nil, nil
+    end
+    return player, itemLink
 end
 
 function LV.Util:InRaidInstance()

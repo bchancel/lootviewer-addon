@@ -1,5 +1,16 @@
 # Changelog
 
+## 12.1.5  August 19, 2026
+
+1. Fixed duplicate loot and trade records.
+2. Manual sync now shares raid nights, loot, trades, raid teams, and excluded items in both directions.
+3. Added bonus loot tracking for raids and dungeons. Raid bonus loot has its own tab and does not count as regular raid loot.
+4. Bonus loot is marked as personal, cannot be traded, and uses the correct reward difficulty.
+5. Scheduled raids now start tracking inside the raid when most of the group belongs to your guild. You are asked to choose when more than one raid team is scheduled.
+6. Dungeon Logging is on by default. The menu now separates raids and dungeons, and the season filter defaults to Current Season.
+7. Warbound gear is ignored, and Curios are grouped by the winner's armor type.
+8. The Roll column shows Need, Greed, or Transmog when known. Roll tooltips group each roll type, and raid history ignores zones outside the raid.
+
 ## 12.1.4 - 2026-08-17
 
 - Fixed guild authority scanning to avoid the protected legacy Guild Information API by reading and caching the guild club description only from the out-of-combat Configuration panel.

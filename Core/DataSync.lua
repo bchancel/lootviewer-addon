@@ -6,6 +6,7 @@ LV.modules.DataSync = LV.DataSync
 local CHUNK_SIZE = 180
 local SEND_DELAY = 0.08
 local SYNC_WINDOW_SECONDS = 60 * 86400
+local SYNC_PROTOCOL_VERSION = 2
 local EXCLUDED_REMOTE_RAID = {}
 
 local syncKinds = {
@@ -14,6 +15,7 @@ local syncKinds = {
     D = true,
     C = true,
     N = true,
+    M = true,
 }
 
 local statusMaps = {
@@ -345,6 +347,7 @@ function LV.DataSync:FormatCounts(counts)
     counts = counts or {}
     local prefix = counts.config and "config, " or ""
     return prefix
+        .. tostring(counts.exclusions or 0) .. " exclusion(s), "
         .. tostring(counts.raids or 0) .. " raid(s), "
         .. tostring(counts.loot or 0) .. " loot, "
         .. tostring(counts.trades or 0) .. " trade(s)"
@@ -356,6 +359,7 @@ function LV.DataSync:TransferSummary(guildName, counts)
     if counts.config then
         parts[#parts + 1] = "Updated Guild Config"
     end
+    parts[#parts + 1] = tostring(counts.exclusions or 0) .. " excluded item rule(s)"
     parts[#parts + 1] = tostring(counts.raids or 0) .. " raid(s)"
     parts[#parts + 1] = tostring(counts.loot or 0) .. " loot(s)"
     parts[#parts + 1] = tostring(counts.trades or 0) .. " trade(s)"
@@ -379,7 +383,7 @@ end
 function LV.DataSync:BuildExport(guildKey)
     local record = LV.Store:GuildRecord(guildKey)
     local cutoff = LV.Util:Now() - SYNC_WINDOW_SECONDS
-    local counts = { config = false, raids = 0, loot = 0, trades = 0 }
+    local counts = { config = false, exclusions = 0, raids = 0, loot = 0, trades = 0 }
     local excludedTeamIDs = { [LV.Constants.PUG_TEAM_ID] = true }
     local includedTeams = {}
     for _, team in ipairs((record.cfg and record.cfg.teams) or {}) do
@@ -400,7 +404,8 @@ function LV.DataSync:BuildExport(guildKey)
     end
     local excludedLootIDs = {}
     for _, row in ipairs((record and record.l) or {}) do
-        if type(row) == "table" and excludedRaidIDs[row.sid] and row.id then
+        if type(row) == "table" and row.id and (excludedRaidIDs[row.sid]
+            or (LV.Loot and LV.Loot.IsWarboundRow and LV.Loot:IsWarboundRow(guildKey, row))) then
             excludedLootIDs[row.id] = true
         end
     end
@@ -469,6 +474,30 @@ function LV.DataSync:BuildExport(guildKey)
         end
     end
 
+    local itemExclusions = LV.Loot and LV.Loot.LootItemExclusions
+        and LV.Loot:LootItemExclusions(record) or {}
+    local exclusionKeys = {}
+    for key in pairs(itemExclusions or {}) do
+        exclusionKeys[#exclusionKeys + 1] = key
+    end
+    table.sort(exclusionKeys)
+    for _, key in ipairs(exclusionKeys) do
+        local entry = itemExclusions[key]
+        local enabled = not LV.Loot or not LV.Loot.IsLootItemExclusionEnabled
+            or LV.Loot:IsLootItemExclusionEnabled(entry)
+        if enabled then
+            counts.exclusions = counts.exclusions + 1
+        end
+        lines[#lines + 1] = line("XI", {
+            { "key", key },
+            { "name", type(entry) == "table" and entry.name or tostring(entry or key) },
+            { "itemID", type(entry) == "table" and entry.itemID or nil },
+            { "enabled", enabled and 1 or 0 },
+            { "default", type(entry) == "table" and entry.default or nil },
+            { "ts", type(entry) == "table" and entry.ts or 0 },
+        })
+    end
+
     local raids = {}
     for raidID, raid in pairs((record and record.r) or {}) do
         if type(raid) == "table" and not excludedRaidIDs[raidID] and (tonumber(raid.st) or 0) >= cutoff then
@@ -524,7 +553,9 @@ function LV.DataSync:BuildExport(guildKey)
 
     local lootRows = {}
     for _, row in ipairs((record and record.l) or {}) do
-        if type(row) == "table" and not excludedRaidIDs[row.sid] and (tonumber(row.ts) or 0) >= cutoff then
+        if type(row) == "table" and not excludedRaidIDs[row.sid]
+            and not (LV.Loot and LV.Loot.IsWarboundRow and LV.Loot:IsWarboundRow(guildKey, row))
+            and (tonumber(row.ts) or 0) >= cutoff then
             lootRows[#lootRows + 1] = row
         end
     end
@@ -553,6 +584,9 @@ function LV.DataSync:BuildExport(guildKey)
             { "src", row.src },
             { "boe", row.boe },
             { "wb", row.wb },
+            { "spec", row.spec },
+            { "bdid", row.bdid },
+            { "br", row.br },
             { "tr", row.tr },
             { "by", nameForID(guildKey, row.by) },
         })
@@ -613,6 +647,8 @@ function LV.DataSync:StartSync(target)
         sent = 0,
         total = 0,
         status = "Waiting for " .. target .. " to accept...",
+        protocolVersion = SYNC_PROTOCOL_VERSION,
+        twoWay = false,
     }
 
     LV.Comms:SendWhisper("Q", target, {
@@ -621,6 +657,7 @@ function LV.DataSync:StartSync(target)
         guildInfo.name,
         cutoff,
         self:FormatCounts(counts),
+        SYNC_PROTOCOL_VERSION,
     })
     self:RefreshUI()
 end
@@ -631,6 +668,7 @@ function LV.DataSync:HandleInvite(parts, sender)
     local guildName = parts[4]
     local cutoff = tonumber(parts[5]) or 0
     local counts = parts[6] or ""
+    local protocolVersion = tonumber(parts[7]) or 1
     local currentKey = LV.Guild:CurrentKey()
 
     if not token or token == "" or not guildKey or guildKey == "" then
@@ -649,6 +687,8 @@ function LV.DataSync:HandleInvite(parts, sender)
         guildName = guildName,
         cutoff = cutoff,
         counts = counts,
+        protocolVersion = protocolVersion,
+        twoWay = protocolVersion >= SYNC_PROTOCOL_VERSION,
     }
 
     StaticPopup_Show(LV.Constants.SYNC_INVITE_PROMPT, sender or "Unknown", guildName or "this guild", self.pendingInvite)
@@ -670,8 +710,10 @@ function LV.DataSync:AcceptInvite(data)
         total = 0,
         state = "receiving",
         status = "Waiting for data from " .. data.sender .. "...",
+        protocolVersion = data.protocolVersion or 1,
+        twoWay = data.twoWay and true or false,
     }
-    LV.Comms:SendWhisper("A", data.sender, { data.token, data.guildKey })
+    LV.Comms:SendWhisper("A", data.sender, { data.token, data.guildKey, SYNC_PROTOCOL_VERSION })
     self:RefreshUI()
 end
 
@@ -736,6 +778,74 @@ function LV.DataSync:BeginChunkSend()
         outbound.ticker = C_Timer.NewTicker(SEND_DELAY, sendNext)
     else
         while outbound.sent < outbound.total do
+            sendNext()
+        end
+    end
+
+    self:RefreshUI()
+end
+
+function LV.DataSync:BeginReturnChunkSend()
+    local inbound = self.inbound
+    if not inbound or not inbound.twoWay or inbound.state ~= "receiving" then
+        return
+    end
+
+    local payload = inbound.returnPayload
+    local counts = inbound.returnCounts
+    if not payload then
+        payload, counts = self:BuildExport(inbound.guildKey)
+    end
+    local chunks = {}
+    local cursor = 1
+    while cursor <= #payload do
+        chunks[#chunks + 1] = string.sub(payload, cursor, cursor + CHUNK_SIZE - 1)
+        cursor = cursor + CHUNK_SIZE
+    end
+    if #chunks == 0 then
+        chunks[1] = ""
+    end
+
+    inbound.returnCounts = counts
+    inbound.returnChunks = chunks
+    inbound.forwardReceived = inbound.received
+    inbound.received = nil
+    inbound.sent = 0
+    inbound.total = #chunks
+    inbound.state = "returning"
+    inbound.status = "Returning merged data to " .. tostring(inbound.sender or "sync partner") .. "..."
+
+    local function sendNext()
+        if not self.inbound or self.inbound.token ~= inbound.token then
+            if inbound.ticker then
+                inbound.ticker:Cancel()
+            end
+            return
+        end
+
+        inbound.sent = inbound.sent + 1
+        LV.Comms:SendWhisper("M", inbound.sender, {
+            inbound.token,
+            inbound.sent,
+            inbound.total,
+            inbound.returnChunks[inbound.sent],
+        })
+
+        if inbound.sent >= inbound.total then
+            if inbound.ticker then
+                inbound.ticker:Cancel()
+                inbound.ticker = nil
+            end
+            inbound.state = "return_sent"
+            inbound.status = "Merged data sent. Waiting for " .. tostring(inbound.sender or "sync partner") .. " to import..."
+        end
+        self:RefreshUI()
+    end
+
+    if C_Timer and C_Timer.NewTicker then
+        inbound.ticker = C_Timer.NewTicker(SEND_DELAY, sendNext)
+    else
+        while inbound.sent < inbound.total do
             sendNext()
         end
     end
@@ -897,11 +1007,23 @@ function LV.DataSync:ImportKill(guildKey, record, fields, remoteRaidMap)
     return true
 end
 
-function LV.DataSync:FindLoot(record, sender, remoteID, playerID, itemKeyID, itemID, timestamp, encounterID, source)
+function LV.DataSync:FindLoot(record, sender, remoteID, playerID, itemKeyID, itemID, timestamp, encounterID, source, bonusEventID)
     for _, row in ipairs((record and record.l) or {}) do
         if type(row) == "table" and type(row.sy) == "table" and row.sy[sender] == remoteID then
             return row, true
         end
+    end
+
+    if source == "bonus" and not LV.Util:IsBlank(bonusEventID) then
+        for _, row in ipairs((record and record.l) or {}) do
+            if type(row) == "table" and row.br == bonusEventID then
+                return row, false
+            end
+        end
+    end
+
+    if source == "bonus" then
+        return nil, false
     end
 
     timestamp = tonumber(timestamp) or 0
@@ -933,6 +1055,9 @@ function LV.DataSync:ImportLoot(guildKey, record, sender, fields, remoteRaidMap,
     if fullName == "" or itemKey == "" then
         return false, true
     end
+    if LV.Util:IsItemWarbound(itemKey) then
+        return false, true
+    end
 
     local playerID = LV.Store:NameID(guildKey, fullName)
     local itemKeyID = LV.Store:ItemID(guildKey, itemKey)
@@ -946,7 +1071,8 @@ function LV.DataSync:ImportLoot(guildKey, record, sender, fields, remoteRaidMap,
         return false, true
     end
 
-    local row, knownRemote = self:FindLoot(record, sender, fields.id, playerID, itemKeyID, itemID, fields.ts, fields.e, fields.src)
+    local row, knownRemote = self:FindLoot(record, sender, fields.id, playerID, itemKeyID, itemID,
+        fields.ts, fields.e, fields.src, fields.br)
     local rollBreakdown = decodeRollBreakdown(guildKey, fields.rb)
     local incomingRoll = fields.r or ""
     local incomingRaw = fields.raw
@@ -986,6 +1112,9 @@ function LV.DataSync:ImportLoot(guildKey, record, sender, fields, remoteRaidMap,
         ) then
             row.rb = rollBreakdown
         end
+        row.spec = row.spec or tonumber(fields.spec) or nil
+        row.bdid = row.bdid or tonumber(fields.bdid) or nil
+        row.br = row.br or (fields.br ~= "" and fields.br or nil)
         remoteLootMap[fields.id] = row.id
         return false, knownRemote
     end
@@ -1011,6 +1140,9 @@ function LV.DataSync:ImportLoot(guildKey, record, sender, fields, remoteRaidMap,
         src = fields.src or "sync",
         boe = tonumber(fields.boe) or nil,
         wb = tonumber(fields.wb) or nil,
+        spec = tonumber(fields.spec) or nil,
+        bdid = tonumber(fields.bdid) or nil,
+        br = fields.br ~= "" and fields.br or nil,
         by = fields.by ~= "" and LV.Store:NameID(guildKey, normalizedName(fields.by)) or nil,
         sy = { [sender] = fields.id },
     }
@@ -1101,6 +1233,44 @@ function LV.DataSync:ImportTrade(guildKey, record, sender, fields, remoteRaidMap
     return true, false
 end
 
+function LV.DataSync:ImportLootItemExclusion(record, fields)
+    if type(record) ~= "table" or not LV.Loot or not LV.Loot.LootItemExclusions then
+        return false
+    end
+
+    local key = LV.Util:Trim(fields.key or "")
+    if key == "" or (not key:match("^id:%d+$") and not key:match("^name:.+$")) then
+        return false
+    end
+
+    local exclusions = LV.Loot:LootItemExclusions(record)
+    local existing = exclusions[key]
+    local incomingTS = tonumber(fields.ts) or 0
+    local existingTS = type(existing) == "table" and (tonumber(existing.ts) or 0) or 0
+    local enabled = fields.enabled == nil or parseBool(fields.enabled)
+    local existingEnabled = LV.Loot:IsLootItemExclusionEnabled(existing)
+    if existing and existingTS > incomingTS then
+        return false
+    end
+    if existing and existingTS == incomingTS and not existingEnabled and enabled then
+        return false
+    end
+
+    local name = LV.Util:Trim(fields.name or "")
+    exclusions[key] = {
+        name = name ~= "" and name or key,
+        itemID = tonumber(fields.itemID) or nil,
+        enabled = enabled and 1 or 0,
+        default = parseBool(fields.default) and 1 or nil,
+        ts = incomingTS,
+    }
+    record.x.itemSeed[key] = 1
+    return not existing
+        or existingTS ~= incomingTS
+        or existingEnabled ~= enabled
+        or (type(existing) == "table" and tostring(existing.name or "") ~= tostring(exclusions[key].name or ""))
+end
+
 function LV.DataSync:ImportConfig(record, fields, configState)
     if type(record) ~= "table" then
         return false
@@ -1109,38 +1279,43 @@ function LV.DataSync:ImportConfig(record, fields, configState)
     record.cfg = record.cfg or {}
     local cfg = record.cfg
     local originalSelectedTeam = cfg.selectedTeam
-    for key, _ in pairs(configBooleans) do
-        if fields[key] ~= nil then
-            cfg[key] = parseBool(fields[key])
+    if not configState.preserveConfig then
+        for key, _ in pairs(configBooleans) do
+            if fields[key] ~= nil then
+                cfg[key] = parseBool(fields[key])
+            end
         end
-    end
-    for key, _ in pairs(configNumbers) do
-        if fields[key] ~= nil and fields[key] ~= "" then
-            cfg[key] = tonumber(fields[key]) or cfg[key]
+        for key, _ in pairs(configNumbers) do
+            if fields[key] ~= nil and fields[key] ~= "" then
+                cfg[key] = tonumber(fields[key]) or cfg[key]
+            end
         end
-    end
-    for key, _ in pairs(configStrings) do
-        if fields[key] ~= nil then
-            cfg[key] = LV.Util:Trim(fields[key])
+        for key, _ in pairs(configStrings) do
+            if fields[key] ~= nil then
+                cfg[key] = LV.Util:Trim(fields[key])
+            end
         end
     end
 
-    local preservedTeams = {}
+    local existingTeams = {}
     local preservedTeamIDs = {}
     for _, team in ipairs(cfg.teams or {}) do
-        if type(team) == "table" and team.excludeSync == true then
-            preservedTeams[#preservedTeams + 1] = team
-            preservedTeamIDs[team.id] = true
+        if type(team) == "table" and team.id then
+            existingTeams[team.id] = team
+            if team.excludeSync == true then
+                preservedTeamIDs[team.id] = true
+            end
         end
     end
     if preservedTeamIDs[originalSelectedTeam] then
         cfg.selectedTeam = originalSelectedTeam
     end
-    cfg.teams = preservedTeams
     cfg.schedules = nil
     cfg._teamsMigrated = 1
     configState.seen = true
     configState.teamsByID = {}
+    configState.existingTeams = existingTeams
+    configState.skippedTeamIDs = {}
     configState.preservedTeamIDs = preservedTeamIDs
     configState.selectedTeam = cfg.selectedTeam
     return true
@@ -1160,24 +1335,36 @@ function LV.DataSync:ImportConfigTeam(record, fields, configState)
         return false
     end
     if configState.preservedTeamIDs and configState.preservedTeamIDs[teamID] then
+        configState.skippedTeamIDs[teamID] = true
         return false
     end
 
-    local team = {
-        id = teamID,
-        name = LV.Util:Trim(fields.name) ~= "" and LV.Util:Trim(fields.name) or teamID,
-        tz = LV.Util:NormalizeTimezone(fields.tz),
-        clock24 = parseBool(fields.clock24),
-        color = LV.Store:NormalizeTeamColor({
-            r = fields.cr,
-            g = fields.cg,
-            b = fields.cb,
-            a = fields.ca,
-        }),
-        schedules = {},
-    }
+    local team = configState.existingTeams and configState.existingTeams[teamID]
+    if team and configState.preserveConfig then
+        configState.skippedTeamIDs[teamID] = true
+        return false
+    end
+    local created = not team
+    if not team then
+        team = { id = teamID }
+    end
+    team.name = LV.Util:Trim(fields.name) ~= "" and LV.Util:Trim(fields.name) or teamID
+    team.tz = LV.Util:NormalizeTimezone(fields.tz)
+    team.clock24 = parseBool(fields.clock24)
+    team.excludeSync = false
+    team.color = LV.Store:NormalizeTeamColor({
+        r = fields.cr,
+        g = fields.cg,
+        b = fields.cb,
+        a = fields.ca,
+    })
+    team.schedules = {}
+
     cfg.teams = cfg.teams or {}
-    cfg.teams[#cfg.teams + 1] = team
+    if created then
+        cfg.teams[#cfg.teams + 1] = team
+        configState.existingTeams[teamID] = team
+    end
     configState.teamsByID[teamID] = team
     return true
 end
@@ -1203,18 +1390,22 @@ function LV.DataSync:ImportConfigSchedule(record, fields, configState)
     return true
 end
 
-function LV.DataSync:ImportPayload(sender, payload)
+function LV.DataSync:ImportPayload(sender, payload, options)
     sender = sender or "unknown"
     local guildKey = LV.Guild:CurrentKey()
     if not guildKey then
-        return { config = false, raids = 0, loot = 0, trades = 0, skipped = 0, kills = 0 }
+        return { config = false, exclusions = 0, raids = 0, loot = 0, trades = 0, skipped = 0, kills = 0 }
     end
 
     local record = LV.Store:GuildRecord(guildKey)
     local remoteRaidMap = {}
     local remoteLootMap = {}
-    local configState = { seen = false, teamsByID = {} }
-    local imported = { config = false, raids = 0, loot = 0, trades = 0, skipped = 0, kills = 0 }
+    local configState = {
+        seen = false,
+        teamsByID = {},
+        preserveConfig = type(options) == "table" and options.preserveConfig == true,
+    }
+    local imported = { config = false, exclusions = 0, raids = 0, loot = 0, trades = 0, skipped = 0, kills = 0 }
 
     for _, rawLine in ipairs(split(payload or "", "\n")) do
         if rawLine ~= "" then
@@ -1231,6 +1422,10 @@ function LV.DataSync:ImportPayload(sender, payload)
                 self:ImportConfigTeam(record, fields, configState)
             elseif kind == "SCH" then
                 self:ImportConfigSchedule(record, fields, configState)
+            elseif kind == "XI" then
+                if self:ImportLootItemExclusion(record, fields) then
+                    imported.exclusions = imported.exclusions + 1
+                end
             elseif kind == "R" then
                 local created = self:ImportRaid(guildKey, record, sender, fields, remoteRaidMap)
                 if created then
@@ -1287,6 +1482,7 @@ function LV.DataSync:HandleMessage(parts, sender)
     if kind == "A" then
         local outbound = self.outbound
         if outbound and outbound.token == parts[2] and outbound.guildKey == parts[3] then
+            outbound.twoWay = tonumber(parts[4]) and tonumber(parts[4]) >= SYNC_PROTOCOL_VERSION or false
             outbound.status = tostring(sender or outbound.target) .. " accepted. Preparing transfer..."
             self:BeginChunkSend()
         end
@@ -1327,20 +1523,77 @@ function LV.DataSync:HandleMessage(parts, sender)
             for index = 1, inbound.total do
                 chunks[#chunks + 1] = inbound.chunks[index] or ""
             end
+            if inbound.twoWay and not inbound.returnPayload then
+                inbound.returnPayload, inbound.returnCounts = self:BuildExport(inbound.guildKey)
+            end
             local imported = self:ImportPayload(sender, table.concat(chunks, ""))
-            inbound.state = "complete"
             inbound.imported = imported
-            inbound.status = "Imported " .. self:FormatCounts(imported) .. "."
-            LV:Print(self:TransferSummary(inbound.guildName, imported))
+            if inbound.twoWay then
+                inbound.status = "Imported " .. self:FormatCounts(imported) .. ". Preparing merged return..."
+                self:BeginReturnChunkSend()
+            else
+                inbound.state = "complete"
+                inbound.status = "Imported " .. self:FormatCounts(imported) .. "."
+                LV:Print(self:TransferSummary(inbound.guildName, imported))
+                LV.Comms:SendWhisper("C", sender, {
+                    inbound.token,
+                    inbound.guildKey,
+                    imported.raids,
+                    imported.loot,
+                    imported.trades,
+                    imported.skipped,
+                    imported.config and 1 or 0,
+                    inbound.guildName or "",
+                    imported.exclusions or 0,
+                })
+            end
+        end
+        self:RefreshUI()
+        return
+    end
+
+    if kind == "M" then
+        local outbound = self.outbound
+        if not outbound or not outbound.twoWay or outbound.token ~= parts[2] or outbound.target ~= sender then
+            return
+        end
+
+        local sequence = tonumber(parts[3]) or 0
+        local total = tonumber(parts[4]) or 0
+        if sequence <= 0 or total <= 0 then
+            return
+        end
+
+        outbound.returnChunks = outbound.returnChunks or {}
+        outbound.received = outbound.received or 0
+        outbound.total = total
+        outbound.state = "receiving_return"
+        if not outbound.returnChunks[sequence] then
+            outbound.returnChunks[sequence] = parts[5] or ""
+            outbound.received = outbound.received + 1
+        end
+        outbound.status = "Receiving merged data from " .. tostring(sender or outbound.target) .. "..."
+
+        if outbound.received >= outbound.total then
+            local chunks = {}
+            for index = 1, outbound.total do
+                chunks[#chunks + 1] = outbound.returnChunks[index] or ""
+            end
+            local imported = self:ImportPayload(sender, table.concat(chunks, ""), { preserveConfig = true })
+            outbound.returnImported = imported
+            outbound.state = "complete"
+            outbound.status = "Two-way sync complete with " .. tostring(sender or outbound.target) .. "."
+            LV:Print("Two-way " .. self:TransferSummary(outbound.guildName, imported))
             LV.Comms:SendWhisper("C", sender, {
-                inbound.token,
-                inbound.guildKey,
+                outbound.token,
+                outbound.guildKey,
                 imported.raids,
                 imported.loot,
                 imported.trades,
                 imported.skipped,
                 imported.config and 1 or 0,
-                inbound.guildName or "",
+                outbound.guildName or "",
+                imported.exclusions or 0,
             })
         end
         self:RefreshUI()
@@ -1348,6 +1601,23 @@ function LV.DataSync:HandleMessage(parts, sender)
     end
 
     if kind == "C" then
+        local inbound = self.inbound
+        if inbound and inbound.token == parts[2] and inbound.sender == sender and inbound.twoWay then
+            local ackCounts = {
+                raids = tonumber(parts[4]) or 0,
+                loot = tonumber(parts[5]) or 0,
+                trades = tonumber(parts[6]) or 0,
+                config = parseBool(parts[8]),
+                exclusions = tonumber(parts[10]) or 0,
+            }
+            inbound.returnImported = ackCounts
+            inbound.state = "complete"
+            inbound.status = "Two-way sync complete with " .. tostring(sender or inbound.sender) .. "."
+            LV:Print("Two-way sync complete for " .. tostring(inbound.guildName or "Guild") .. ".")
+            self:RefreshUI()
+            return
+        end
+
         local outbound = self.outbound
         if outbound and outbound.token == parts[2] then
             outbound.state = "complete"
@@ -1355,15 +1625,11 @@ function LV.DataSync:HandleMessage(parts, sender)
                 raids = tonumber(parts[4]) or 0,
                 loot = tonumber(parts[5]) or 0,
                 trades = tonumber(parts[6]) or 0,
-                config = parseBool(parts[7]),
+                config = parseBool(parts[8]),
+                exclusions = tonumber(parts[10]) or 0,
             }
-            local ackGuildName = parts[8] ~= "" and parts[8] or outbound.guildName
-            local configText = ackCounts.config and "config, " or ""
-            outbound.status = tostring(sender or outbound.target) .. " imported "
-                .. configText
-                .. tostring(ackCounts.raids) .. " raid(s), "
-                .. tostring(ackCounts.loot) .. " loot, "
-                .. tostring(ackCounts.trades) .. " trade(s)."
+            local ackGuildName = parts[9] ~= "" and parts[9] or outbound.guildName
+            outbound.status = tostring(sender or outbound.target) .. " imported " .. self:FormatCounts(ackCounts) .. "."
             LV:Print(self:TransferSummary(ackGuildName, ackCounts))
             self:RefreshUI()
         end
@@ -1371,7 +1637,12 @@ function LV.DataSync:HandleMessage(parts, sender)
 end
 
 function LV.DataSync:Progress()
-    local active = self.inbound or self.outbound
+    local inbound = self.inbound
+    local outbound = self.outbound
+    local active = (inbound and inbound.state ~= "complete" and inbound)
+        or (outbound and outbound.state ~= "complete" and outbound)
+        or outbound
+        or inbound
     if not active then
         return 0, 1, "Ready to sync."
     end
@@ -1392,7 +1663,7 @@ function LV.DataSync:Progress()
 end
 
 StaticPopupDialogs[LV.Constants.SYNC_INVITE_PROMPT] = {
-    text = "%s wants to send LootViewer data for %s.\nAccept guild config plus attendance and loot from the last 2 months?",
+    text = "%s wants to merge LootViewer data for %s.\nExchange guild config, excluded items, attendance, and loot from the last 2 months? The inviter's shared config will be used.",
     button1 = ACCEPT,
     button2 = "Decline",
     timeout = 0,

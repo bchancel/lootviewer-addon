@@ -547,7 +547,7 @@ function UI:RenderGeneralOptions(guildInfo)
     local dungeon = sectionGrid(self.content, "Dungeon Logging", -132, {
         {
             function(parent, x, y, width)
-                checkCell(parent, x, y, width, "Enable Dungeon Logging", account.dungeonLogging, function(value)
+                checkCell(parent, x, y, width, "Dungeon Logging", account.dungeonLogging, function(value)
                     account.dungeonLogging = value and true or false
                     if not account.dungeonLogging and self:IsDungeonContext() then
                         self:SetContextValue("raid:" .. LV.Seasons:CurrentSeasonID())

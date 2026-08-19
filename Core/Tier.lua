@@ -5,11 +5,27 @@ LV.Tier = {}
 local seasonID = "midnight-2"
 
 local tokenTypes = {
-    { id = "curio", label = "Curio", family = "All Armor" },
+    { id = "curio", label = "Unclassified Curio", family = "Class Unknown" },
     { id = "cloth", label = "Cloth", family = "Venomwoven" },
     { id = "leather", label = "Leather", family = "Venomcured" },
     { id = "mail", label = "Mail", family = "Venomcast" },
     { id = "plate", label = "Plate", family = "Venomforged" },
+}
+
+local armorTypeByClass = {
+    DEATHKNIGHT = "plate",
+    DEMONHUNTER = "leather",
+    DRUID = "leather",
+    EVOKER = "mail",
+    HUNTER = "mail",
+    MAGE = "cloth",
+    MONK = "leather",
+    PALADIN = "plate",
+    PRIEST = "cloth",
+    ROGUE = "leather",
+    SHAMAN = "mail",
+    WARLOCK = "cloth",
+    WARRIOR = "plate",
 }
 
 -- The Venomous Abyss uses one base item ID per token across raid difficulties.
@@ -85,10 +101,12 @@ function LV.Tier:TypeValues(selectedSeasonID)
         { value = "all", label = "All Tier Types" },
     }
     for _, definition in ipairs(self:Types(selectedSeasonID)) do
-        values[#values + 1] = {
-            value = definition.id,
-            label = definition.label .. " - " .. definition.family,
-        }
+        if definition.id ~= "curio" then
+            values[#values + 1] = {
+                value = definition.id,
+                label = definition.label .. " - " .. definition.family,
+            }
+        end
     end
     return values
 end
@@ -108,4 +126,18 @@ function LV.Tier:TokenForRow(guildKey, row)
         itemID = LV.Util:ItemID(itemKey)
     end
     return self:Token(itemID)
+end
+
+function LV.Tier:GroupTypeForRow(guildKey, row, token)
+    token = token or self:TokenForRow(guildKey, row)
+    if not token or token.type ~= "curio" then
+        return token and token.type or nil
+    end
+
+    local classToken = LV.Store:PlayerClass(guildKey, row and row.p)
+    if LV.Util:IsBlank(classToken) and row and row.cls then
+        classToken = LV.Store:DictionaryValue(guildKey, "s", row.cls)
+    end
+    classToken = tostring(classToken or ""):upper():gsub("[^A-Z]", "")
+    return armorTypeByClass[classToken] or "curio"
 end

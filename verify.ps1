@@ -177,6 +177,7 @@ $storeText = Get-Content -LiteralPath (Join-Path $root "Core\Store.lua") -Raw
 $constantsText = Get-Content -LiteralPath (Join-Path $root "Core\Constants.lua") -Raw
 $utilText = Get-Content -LiteralPath (Join-Path $root "Core\Util.lua") -Raw
 $guildText = Get-Content -LiteralPath (Join-Path $root "Core\Guild.lua") -Raw
+$commsText = Get-Content -LiteralPath (Join-Path $root "Core\Comms.lua") -Raw
 $dataSyncText = Get-Content -LiteralPath (Join-Path $root "Core\DataSync.lua") -Raw
 $seasonText = Get-Content -LiteralPath (Join-Path $root "Core\Seasons.lua") -Raw
 $tierText = Get-Content -LiteralPath (Join-Path $root "Core\Tier.lua") -Raw
@@ -192,6 +193,13 @@ if ($storeText -notmatch 'LootViewerDB' -or $storeText -notmatch 'guild') {
 }
 if ($raidText -notmatch 'ENCOUNTER_' -or $lootText -notmatch 'LOOT_' -or $tradeText -notmatch 'TRADE_') {
     throw "Raid, loot, or trade event capture appears incomplete."
+}
+if ($lootText -notmatch 'function LV\.Loot:LootHistoryKey' -or
+    $lootText -notmatch 'function LV\.Loot:FindLootHistoryDuplicate' -or
+    $lootText -notmatch 'duplicate\.lh\s*=\s*duplicate\.lh\s+or\s+row\.lh' -or
+    $lootText -notmatch 'wantedEncounterID\s*=\s*tonumber\(wantedEncounterID\)\s+or\s+self:CurrentOrLastEncounterID\(\)' -or
+    $lootText -notmatch 'info\.lootHistoryKey\s*=\s*self:LootHistoryKey') {
+    throw "Loot-history rescans no longer have stable per-drop deduplication or encounter scoping."
 }
 foreach ($seasonToken in @(
     'midnight-1', 'midnight-2', '20260812',
@@ -212,6 +220,13 @@ foreach ($tierItemID in 270909..270929) {
 }
 if ($tierText -notmatch 'seasonCatalogs' -or $tierText -notmatch 'HasDefinitions') {
     throw "Core/Tier.lua no longer stores tier token definitions by season."
+}
+if ($tierText -notmatch 'function LV\.Tier:GroupTypeForRow' -or
+    $tierText -notmatch 'MAGE\s*=\s*"cloth"' -or
+    $tierText -notmatch 'SHAMAN\s*=\s*"mail"' -or
+    $tierText -notmatch 'WARRIOR\s*=\s*"plate"' -or
+    $uiText -notmatch 'groupType\s*=\s*token\s+and\s+LV\.Tier:GroupTypeForRow') {
+    throw "Curio tier tokens no longer group under the winner's armor class."
 }
 foreach ($tierToken in @(
     'Slumbering Coil Curio', 'Venomwoven', 'Venomcured', 'Venomcast', 'Venomforged',
@@ -248,6 +263,25 @@ if ($utilText -notmatch 'NormalizeTimezone' -or
     $dataSyncText -notmatch 'excludedTeamIDs' -or
     $dataSyncText -notmatch 'EXCLUDED_REMOTE_RAID') {
     throw "Per-team time zones or local-only sync exclusion appear incomplete."
+}
+if ($dataSyncText -notmatch 'SYNC_PROTOCOL_VERSION\s*=\s*2' -or
+    $dataSyncText -notmatch 'function LV\.DataSync:BeginReturnChunkSend' -or
+    $dataSyncText -notmatch 'SendWhisper\("M"' -or
+    $dataSyncText -notmatch 'kind\s*==\s*"M"' -or
+    $dataSyncText -notmatch 'configState\.existingTeams' -or
+    $dataSyncText -notmatch 'preserveConfig\s*=\s*true' -or
+    $dataSyncText -notmatch 'Two-way sync complete' -or
+    $uiText -notmatch 'Two-Way Guild Merge') {
+    throw "Manual sync no longer performs a backward-compatible two-way raid merge with additive teams."
+}
+if ($dataSyncText -notmatch 'line\("XI"' -or
+    $dataSyncText -notmatch 'function LV\.DataSync:ImportLootItemExclusion' -or
+    $dataSyncText -notmatch 'kind\s*==\s*"XI"' -or
+    $dataSyncText -notmatch 'counts\.exclusions' -or
+    $lootText -notmatch 'IsLootItemExclusionEnabled' -or
+    $lootText -notmatch 'enabled\s*=\s*0' -or
+    $lootText -notmatch 'ts\s*=\s*LV\.Util:Now\(\)') {
+    throw "Manual sync no longer merges excluded-item rules and undo tombstones."
 }
 if ($storeText -notmatch 'GLOBAL_PUG_TEAM' -or
     $storeText -notmatch '197 / 255' -or
@@ -313,25 +347,86 @@ if ($seasonText -notmatch 'for month = 1, 6 do' -or
     $uiText -notmatch 'No tier tokens defined for this season') {
     throw "Season filters or the 1-6 month attendance ranges appear incomplete."
 }
+if ($seasonText -notmatch 'label\s*=\s*"Current Season"' -or
+    $seasonText -notmatch '\{ value = "all", label = "All" \}' -or
+    $uiText -notmatch 'function LV\.UI:ResetSeasonOnOpen' -or
+    $uiText -notmatch 'self:ResetSeasonOnOpen\(\)' -or
+    $uiText -notmatch 'dungeonHistory\s*=\s*\{' -or
+    $uiText -notmatch 'raidNavHeader:SetText\("Raids"\)' -or
+    $uiText -notmatch 'dungeonNavHeader:SetText\("Dungeons"\)' -or
+    $uiText -notmatch 'dungeonNavHeader:SetShown\(dungeonEnabled\)' -or
+    $uiText -notmatch 'sync:SetPoint\("BOTTOMLEFT", 18, 54\)') {
+    throw "The Current Season/All selector, grouped sidebar, conditional dungeon menu, or fixed Sync action appears incomplete."
+}
 if ($dungeonText -notmatch 'CHALLENGE_MODE_COMPLETED' -or
     $dungeonText -notmatch 'BONUS_ROLL_RESULT' -or
     $dungeonText -notmatch 'specID' -or
     $historyMeterText -notmatch 'Champion \(0-5\)' -or
-    $historyMeterText -notmatch 'Hero \(6-10\)' -or
-    $historyMeterText -notmatch 'Myth \(Bonus Roll\)' -or
-    $optionsText -notmatch 'Enable Dungeon Logging') {
+    $historyMeterText -notmatch 'Hero \(6-9\)' -or
+    $historyMeterText -notmatch 'Myth \(M\+10 Bonus Roll\)' -or
+    $optionsText -notmatch 'checkCell\(parent, x, y, width, "Dungeon Logging"' -or
+    $constantsText -notmatch 'dungeonLogging\s*=\s*true') {
     throw "Dungeon logging, bonus-roll capture, or dungeon history UI appears incomplete."
+}
+if ($utilText -notmatch 'function LV\.Util:IsItemWarbound' -or
+    $utilText -notmatch 'TooltipDataItemBinding' -or
+    $utilText -notmatch 'AccountUntilEquipped' -or
+    $utilText -notmatch 'BindToAccountUntilEquipped' -or
+    $utilText -notmatch 'line\.bonding' -or
+    $utilText -notmatch 'C_TooltipInfo\.GetHyperlink' -or
+    $lootText -notmatch 'if warbound then' -or
+    $dungeonText -notmatch 'LV\.Util:IsItemWarbound\(fields\.itemLink\)' -or
+    $historyMeterText -notmatch 'LV\.Dungeons:IsWarboundRow\(row\)' -or
+    $dataSyncText -notmatch 'LV\.Loot:IsWarboundRow\(guildKey, row\)') {
+    throw "Warbound-until-equipped gear is no longer excluded from raid, dungeon, and sync counts."
+}
+if ($lootText -notmatch 'function LV\.Loot:RecordRaidBonusResult' -or
+    $lootText -notmatch 'src\s*=\s*"bonus"' -or
+    $lootText -notmatch 'BONUS_ROLL_RESULT' -or
+    $uiText -notmatch '\{ key = "bonus", label = "Bonus Rolls" \}' -or
+    $uiText -notmatch 'sourceFilter\s*==\s*"bonus"' -or
+    $uiText -notmatch '\(row\.src\s*==\s*"bonus"\)\s*==\s*\(sourceFilter\s*==\s*"bonus"\)' -or
+    $historyMeterText -notmatch 'row\.src\s*~=\s*"bonus"') {
+    throw "Raid bonus rolls are no longer captured and isolated on their own Loot History tab."
+}
+if ($utilText -notmatch 'function LV\.Util:ExtractBonusLoot' -or
+    $utilText -notmatch 'LOOT_ITEM_BONUS_ROLL_SELF' -or
+    $utilText -notmatch 'LOOT_ITEM_BONUS_ROLL' -or
+    $lootText -notmatch 'function LV\.Loot:NewBonusEventID' -or
+    $lootText -notmatch 'br\s*=\s*fields\.bonusEventID' -or
+    $lootText -notmatch 'function LV\.Loot:RecordRaidBonusChatLoot' -or
+    $dataSyncText -notmatch 'row\.br\s*==\s*bonusEventID' -or
+    $dungeonText -notmatch 'level\s*>=\s*10\s+and\s+"myth"' -or
+    $lootText -notmatch 'sourceDifficultyID\s*==\s*15\s+or\s+sourceDifficultyID\s*==\s*16' -or
+    $tradeText -notmatch 'sourceLoot\.src\s*==\s*"bonus"' -or
+    $tradeText -notmatch 'lootRow\.src\s*==\s*"bonus"' -or
+    $dungeonText -notmatch 'row\.src\s*~=\s*"bonus"' -or
+    $uiText -notmatch 'Personal bonus loot' -or
+    $uiText -notmatch 'Cannot be traded') {
+    throw "Unique localized bonus-loot capture, reward labels, sync identity, or no-trade protection appears incomplete."
+}
+if ($raidText -notmatch 'function LV\.Raid:ActiveScheduleMatches' -or
+    $raidText -notmatch 'guildMembers\s*\*\s*2\s*>\s*total' -or
+    $raidText -notmatch 'function LV\.Raid:MaybeAutoStartScheduled' -or
+    $raidText -notmatch 'function LV\.Raid:ObserveLoggerProbe' -or
+    $raidText -notmatch 'AUTO_START_ELECTION_SECONDS' -or
+    $commsText -notmatch 'kind\s*==\s*"P"' -or
+    $uiText -notmatch 'function LV\.UI:PromptRaidTeamSelection') {
+    throw "Scheduled in-instance raid auto-start, logger election, guild-majority protection, or team selection appears incomplete."
 }
 if ($seasonText -notmatch 'DungeonFilterValues' -or
     $historyMeterText -notmatch 'CreateDungeonTrackSlider' -or
     $historyMeterText -notmatch 'Bonus Rolls' -or
     $historyMeterText -notmatch 'dungeonHistoryFilter' -or
+    $historyMeterText -notmatch 'FilteredDungeonLootRows' -or
+    $historyMeterText -notmatch 'dungeonHistorySearch' -or
+    $uiText -notmatch 'CreateHistorySearch' -or
     $uiText -notmatch 'Raid Information' -or
     $uiText -notmatch 'Bosses Killed' -or
     $uiText -notmatch 'CreateHistoryDateDisplay' -or
     $uiText -notmatch 'Raid hours:' -or
     $uiText -notmatch 'iconOnly') {
-    throw "Dungeon distribution filters, raid detail context, or the formatted Recent loot table appears incomplete."
+    throw "Dungeon distribution/search filters, raid detail context, or the formatted Recent loot table appears incomplete."
 }
 if ($tradeText -notmatch 'RecordManualTrade' -or
     $tradeText -notmatch 'sourceLootID' -or
@@ -344,6 +439,17 @@ if ($tradeText -notmatch 'RecordManualTrade' -or
     $historyMeterText -notmatch 'maxTotal = math\.max') {
     throw "Manual per-loot trade options or proportional Distribution meter scaling appears incomplete."
 }
+if ($tradeText -notmatch 'function LV\.Trade:FindDuplicate' -or
+    $tradeText -notmatch 'tradeEventByRemoteID' -or
+    $tradeText -notmatch 'lootEventByRemoteID' -or
+    $tradeText -notmatch 'sender:lower\(\)\s*==\s*LV\.Loot:NormalizePlayerName' -or
+    $tradeText -notmatch 'row\.id,\s*\r?\n\s*\}\)' -or
+    $tradeText -notmatch 'parts\[10\]' -or
+    $tradeText -notmatch 'replaceWithEmpty\s*=\s*replaceWithEmpty\s+and\s+not\s+self\.active\.accepted' -or
+    $tradeText -notmatch 'function LV\.Trade:DeduplicateRecord' -or
+    $tradeText -notmatch 'sourceLoot\.tr\s*=\s*keep\.id') {
+    throw "Live trade messages no longer have stable deduplication, final item snapshot protection, or safe duplicate cleanup."
+}
 if ($uiText -notmatch 'HistoryFilterPreference' -or
     $uiText -notmatch 'raidMinDifficulty' -or
     $historyMeterText -notmatch 'dungeonMinTrack' -or
@@ -352,8 +458,17 @@ if ($uiText -notmatch 'HistoryFilterPreference' -or
     throw "Saved raid or dungeon loot-level filter preferences appear incomplete."
 }
 if ($uiText -notmatch 'CreateHistoryColumnHeader\(parent, "Roll"' -or
-    $uiText -notmatch 'local methodWidth = 40') {
-    throw "The Recent Loot History Roll column label or width appears incomplete."
+    $uiText -notmatch 'local methodWidth = 40' -or
+    $uiText -notmatch 'lootroll-rollicon-yourolled-need' -or
+    $uiText -notmatch 'lootroll-rollicon-yourolled-greed' -or
+    $uiText -notmatch 'lootroll-rollicon-yourolled-transmog' -or
+    $uiText -notmatch 'INV_Misc_Dice_01' -or
+    $uiText -notmatch 'local lootRollGroupOrder\s*=\s*\{ "need", "greed", "transmog" \}' -or
+    $uiText -notmatch 'method ~= "pass" and method ~= "noroll"' -or
+    $uiText -notmatch 'aWinner\s*>\s*bWinner' -or
+    $uiText -notmatch 'self:AddLootBreakdownTooltip\(guildKey, row, false\)' -or
+    $uiText -notmatch 'CreateHistoryColumnHeader\(parent, "Roll", 644') {
+    throw "The Roll column, winner-method icons, grouped tooltip, or legacy dice fallback appears incomplete."
 }
 if ($uiText -notmatch 'CreateHistoryColumnHeader\(parent, "Owner"' -or
     $uiText -notmatch 'Final owner after trade' -or
