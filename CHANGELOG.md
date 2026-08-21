@@ -1,5 +1,13 @@
 # Changelog
 
+## 12.1.6 - 2026-08-21
+
+1. Fixed historical attendance edits incorrectly extending the recorded raid duration. 
+2. Scheduled guild raids now take priority over Pug tracking during the configured pre raid window.
+3. Fixed empty Main and trailing Pug entries being created after a scheduled raid ended.
+4. Added an optional Include LFR setting for automatic Pug raids.
+5. Trades now include only items linked to captured raid loot.
+
 ## 12.1.5  August 19, 2026
 
 1. Fixed duplicate loot and trade records.

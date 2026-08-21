@@ -15,13 +15,13 @@ if ($tocText -notmatch '(?m)^## Interface:\s*120100,\s*120007\s*$') {
 if ($tocText -notmatch '(?m)^## Title:\s*LootViewer\s*$') {
     throw "LootViewer.toc has an unexpected title."
 }
-if ($tocText -notmatch '(?m)^## Version:\s*(\d+\.\d+\.\d+)\s*$') {
-    throw "LootViewer.toc does not contain a semantic version."
+if ($tocText -notmatch '(?m)^## Version:\s*(\d+\.\d+\.\d+(?:-\d+)?)\s*$') {
+    throw "LootViewer.toc does not contain a semantic version with an optional numeric prerelease suffix."
 }
 $tocVersion = $Matches[1]
 $runtimeText = Get-Content -LiteralPath (Join-Path $root "LootViewer.lua") -Raw
-if ($runtimeText -notmatch '(?m)^LV\.version\s*=\s*"(\d+\.\d+\.\d+)"\s*$') {
-    throw "LootViewer.lua does not contain a semantic LV.version value."
+if ($runtimeText -notmatch '(?m)^LV\.version\s*=\s*"(\d+\.\d+\.\d+(?:-\d+)?)"\s*$') {
+    throw "LootViewer.lua does not contain a semantic LV.version value with an optional numeric prerelease suffix."
 }
 if ($Matches[1] -ne $tocVersion) {
     throw "LootViewer.toc version $tocVersion does not match LootViewer.lua version $($Matches[1])."
@@ -307,10 +307,17 @@ if ($guildText -notmatch 'ParseAuthorityDirective' -or
     throw "Guild Information authority directives or their locked configuration state appear incomplete."
 }
 if ($constantsText -notmatch 'autoPugRaids\s*=\s*false' -or
+    $constantsText -notmatch 'autoPugIncludeLFR\s*=\s*false' -or
     $raidText -notmatch 'MaybeAutoStartPug' -or
     $raidText -notmatch 'IsWithinRaidHours' -or
+    $raidText -notmatch 'function isLFRWorldTier' -or
+    $raidText -notmatch 'difficultyID\s*==\s*17\s+or\s+difficultyID\s*==\s*250' -or
+    $raidText -notmatch 'account\.autoPugIncludeLFR\s*~=\s*true' -or
     $raidText -notmatch 'IsGlobalPugTeam\(teamID\)' -or
     $optionsText -notmatch 'Auto Start Pug Raids' -or
+    $optionsText -notmatch 'Include LFR' -or
+    $optionsText -notmatch 'account\.autoPugRaids\s+then[\s\S]*?autoPugIncludeLFR' -or
+    $optionsText -notmatch 'equivalent World tier' -or
     $uiText -notmatch 'attendanceTeamID' -or
     $uiText -notmatch 'historyTeamID' -or
     $uiText -notmatch 'EventMatchesRaidTag' -or
@@ -406,13 +413,30 @@ if ($utilText -notmatch 'function LV\.Util:ExtractBonusLoot' -or
     throw "Unique localized bonus-loot capture, reward labels, sync identity, or no-trade protection appears incomplete."
 }
 if ($raidText -notmatch 'function LV\.Raid:ActiveScheduleMatches' -or
+    $raidText -notmatch 'local before\s*=\s*tonumber\(cfg\.promptBefore\)' -or
+    $raidText -notmatch 'serverNow\s*<\s*scheduledEndAt\s*\+\s*\(after\s*\*\s*60\)' -or
+    $raidText -notmatch 'isAutoScheduled\s+and\s+scheduledEnd[\s\S]*?LV\.Util:ServerNow\(\)\s*>=\s*scheduledEnd' -or
     $raidText -notmatch 'guildMembers\s*\*\s*2\s*>\s*total' -or
     $raidText -notmatch 'function LV\.Raid:MaybeAutoStartScheduled' -or
+    $raidText -notmatch 'isGuildRaidGroup\(\)\s+and\s+#self:ActiveScheduleMatches\(cfg\)\s*>\s*0' -or
+    $raidText -notmatch 'self\.autoPugSignature\s*=\s*signature' -or
     $raidText -notmatch 'function LV\.Raid:ObserveLoggerProbe' -or
     $raidText -notmatch 'AUTO_START_ELECTION_SECONDS' -or
     $commsText -notmatch 'kind\s*==\s*"P"' -or
     $uiText -notmatch 'function LV\.UI:PromptRaidTeamSelection') {
     throw "Scheduled in-instance raid auto-start, logger election, guild-majority protection, or team selection appears incomplete."
+}
+$raidAutoStartEventBlocks = [regex]::Matches(
+    $raidText,
+    '(?sm)LV:RegisterEvent\("(?:PLAYER_ENTERING_WORLD|ZONE_CHANGED_NEW_AREA|GROUP_ROSTER_UPDATE)".*?^end\)'
+)
+if ($raidAutoStartEventBlocks.Count -ne 3 -or
+    @($raidAutoStartEventBlocks | Where-Object {
+        $_.Value.IndexOf('MaybeAutoStartScheduled') -lt 0 -or
+        $_.Value.IndexOf('MaybeAutoStartPug') -lt 0 -or
+        $_.Value.IndexOf('MaybeAutoStartScheduled') -gt $_.Value.IndexOf('MaybeAutoStartPug')
+    }).Count -gt 0) {
+    throw "Scheduled raid classification must run before automatic Pug classification on raid-state events."
 }
 if ($seasonText -notmatch 'DungeonFilterValues' -or
     $historyMeterText -notmatch 'CreateDungeonTrackSlider' -or
@@ -431,13 +455,17 @@ if ($seasonText -notmatch 'DungeonFilterValues' -or
 if ($tradeText -notmatch 'RecordManualTrade' -or
     $tradeText -notmatch 'sourceLootID' -or
     $tradeText -notmatch 'parts\[7\]' -or
+    $tradeText -notmatch 'if\s+not\s+sourceLoot\s+or\s+sourceLoot\.src\s*==\s*"bonus"\s+then' -or
+    $tradeText -match 'if\s+not\s+session\s+and\s+not\s+sourceLoot\s+then' -or
+    $tradeText -notmatch 'sid\s*=\s*sourceLoot\.sid' -or
+    $tradeText -notmatch 'loot\s*=\s*sourceLoot\.id' -or
     $uiText -notmatch 'ShowLootItemActions' -or
     $uiText -notmatch 'RaidLootRecipientValues' -or
     $uiText -notmatch 'Trade Item' -or
     $uiText -notmatch 'Exclude Loot' -or
     $historyMeterText -notmatch '#entries / maxTotal' -or
     $historyMeterText -notmatch 'maxTotal = math\.max') {
-    throw "Manual per-loot trade options or proportional Distribution meter scaling appears incomplete."
+    throw "Trade-to-loot linkage, manual per-loot trade options, or proportional Distribution meter scaling appears incomplete."
 }
 if ($tradeText -notmatch 'function LV\.Trade:FindDuplicate' -or
     $tradeText -notmatch 'tradeEventByRemoteID' -or
@@ -492,6 +520,17 @@ if ($uiText -notmatch 'CanModifyHistoricalRaid' -or
     $uiText -notmatch 'Raid Team' -or
     $uiText -notmatch 'Attendance, kills, loot, and trades remain linked') {
     throw "Pugs historical-edit bypass or linked raid-team reassignment appears incomplete."
+}
+$historicalAttendanceEdits = [regex]::Matches(
+    $uiText,
+    '(?s)function LV\.UI:(?:Set|Remove)HistoricalRaidAttendance\b.*?(?=\r?\nfunction LV\.UI:)'
+)
+if ($historicalAttendanceEdits.Count -ne 2 -or
+    @($historicalAttendanceEdits | Where-Object { $_.Value -match '\braid\.en\s*=' }).Count -gt 0 -or
+    $storeText -notmatch 'function LV\.Store:NormalizeHistoricalRaidTimes' -or
+    $storeText -notmatch 'raid\.lastSource == "ui_edit"' -or
+    $storeText -notmatch 'raid\.en = maximumEndAt') {
+    throw "Historical attendance edits can alter raid duration, or the scheduled-raid repair is missing."
 }
 if ($uiText -notmatch 'Delete Raid Attendance\?' -or
     $uiText -notmatch 'self:ShowConfirmationDialog' -or

@@ -56,6 +56,15 @@ local function loggerSignature(guildKey, instanceID, difficultyID)
     return table.concat({ tostring(guildKey or ""), tostring(instanceID or 0), tostring(difficultyID or 0) }, ":")
 end
 
+local function isLFRWorldTier(instance)
+    local difficultyID = tonumber(instance and instance.difficultyID) or 0
+    local difficultyName = tostring(instance and instance.difficultyName or ""):lower()
+    return difficultyID == 17 or difficultyID == 250
+        or difficultyName == "world"
+        or difficultyName:find("raid finder", 1, true) ~= nil
+        or difficultyName:find("lfr", 1, true) ~= nil
+end
+
 local function teamWeekMinute(team)
     return LV.Util:TimezoneWeekMinute(team and team.tz or "realm", LV.Util:ServerNow())
 end
@@ -140,7 +149,9 @@ function LV.Raid:ActiveScheduleMatches(cfg)
         return matches
     end
 
+    local before = tonumber(cfg.promptBefore) or 60
     local after = tonumber(cfg.endGrace) or 0
+    local serverNow = LV.Util:ServerNow()
     for teamIndex, team in ipairs(cfg.teams) do
         local currentMinute = teamWeekMinute(team)
         for slotIndex, slot in ipairs(team.schedules or {}) do
@@ -150,8 +161,11 @@ function LV.Raid:ActiveScheduleMatches(cfg)
             local duration = tonumber(slot.d) or 180
             if weekday then
                 local startMinute = ((weekday - 1) * 24 * 60) + (hour * 60) + minute
-                local active, matchedStart = inWeeklyWindow(currentMinute, startMinute, 0, duration, after)
-                if active then
+                local active, matchedStart = inWeeklyWindow(currentMinute, startMinute, before, duration, after)
+                local scheduledStartAt = active and scheduledServerTimestamp(matchedStart, currentMinute) or nil
+                local scheduledEndAt = active and scheduledServerTimestamp(matchedStart + duration, currentMinute) or nil
+                if active and scheduledStartAt and scheduledEndAt
+                    and serverNow < scheduledEndAt + (after * 60) then
                     matches[#matches + 1] = {
                         team = team,
                         teamIndex = teamIndex,
@@ -159,6 +173,8 @@ function LV.Raid:ActiveScheduleMatches(cfg)
                         startMinute = matchedStart,
                         endMinute = matchedStart + duration,
                         currentMinute = currentMinute,
+                        scheduledStartAt = scheduledStartAt,
+                        scheduledEndAt = scheduledEndAt,
                     }
                     break
                 end
@@ -465,12 +481,14 @@ function LV.Raid:MaybeAutoStartPug()
         return false
     end
     local cfg = LV.Store:GetConfig(guildInfo.key)
-    if not cfg or cfg.enabled == false or self:IsWithinRaidHours(cfg) then
+    if not cfg or cfg.enabled == false or self:IsWithinRaidHours(cfg)
+        or (isGuildRaidGroup() and #self:ActiveScheduleMatches(cfg) > 0) then
         return false
     end
 
     local instance = LV.Util:CurrentInstance()
-    if instance.instanceType ~= "raid" or tonumber(instance.difficultyID) == 17 then
+    if instance.instanceType ~= "raid"
+        or (isLFRWorldTier(instance) and account.autoPugIncludeLFR ~= true) then
         return false
     end
     local instanceSeason = LV.Seasons:InstanceSeasonID(instance.instanceID, instance.name)
@@ -529,6 +547,10 @@ function LV.Raid:StartSession(reason, teamID, options)
         local _, _, _, _, startMinute, endMinute, currentMinute = self:FindActiveSchedule(record.cfg, nil, team.id)
         scheduledStart = scheduledServerTimestamp(startMinute, currentMinute)
         scheduledEnd = scheduledServerTimestamp(endMinute, currentMinute)
+    end
+    if isAutoScheduled and scheduledEnd
+        and LV.Util:ServerNow() >= scheduledEnd + ((tonumber(record.cfg.endGrace) or 0) * 60) then
+        return nil
     end
     local raidID = LV.Store:NewID(record, "raid", "r")
     local playerID = LV.Store:NameID(guildInfo.key, LV.Util:PlayerFullName())
@@ -640,7 +662,17 @@ function LV.Raid:ExpireScheduledSession(guildKey, raidID, endAt)
     session.en = tonumber(endAt) or LV.Util:Now()
     session.endReason = "scheduled_end"
     record.cur = nil
+    local signature = loggerSignature(guildKey, session.iid, session.did)
     self.scheduledEndTimers[tostring(guildKey) .. ":" .. tostring(raidID)] = nil
+    self.autoStartElections[signature] = nil
+    if LV.Guild:CurrentKey() == guildKey then
+        local instance = LV.Util:CurrentInstance()
+        if IsInRaid() and LV.Util:InRaidInstance()
+            and tonumber(instance.instanceID) == tonumber(session.iid)
+            and tonumber(instance.difficultyID) == tonumber(session.did) then
+            self.autoPugSignature = signature
+        end
+    end
     if LV.Guild:CurrentKey() == guildKey and not LV.Store:IsRaidExcludedFromSync(guildKey, session) then
         LV.Comms:Send("E", { guildKey, session.id, session.en })
     end
@@ -1127,24 +1159,24 @@ StaticPopupDialogs[LV.Constants.TRACK_PROMPT] = {
 
 LV:RegisterEvent("PLAYER_ENTERING_WORLD", function()
     C_Timer.After(2, function()
-        LV.Raid:MaybeAutoStartPug()
         LV.Raid:MaybeAutoStartScheduled()
+        LV.Raid:MaybeAutoStartPug()
         LV.Raid:RecordRaidRoster("enter_world")
     end)
 end)
 
 LV:RegisterEvent("ZONE_CHANGED_NEW_AREA", function()
     C_Timer.After(1, function()
-        LV.Raid:MaybeAutoStartPug()
         LV.Raid:MaybeAutoStartScheduled()
+        LV.Raid:MaybeAutoStartPug()
         LV.Raid:RecordRaidRoster("zone")
     end)
 end)
 
 LV:RegisterEvent("GROUP_ROSTER_UPDATE", function()
     C_Timer.After(1, function()
-        LV.Raid:MaybeAutoStartPug()
         LV.Raid:MaybeAutoStartScheduled()
+        LV.Raid:MaybeAutoStartPug()
         LV.Raid:RecordRaidRoster("roster")
     end)
 end)

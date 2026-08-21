@@ -14,6 +14,7 @@ LV.Constants = {
         account = {
             dungeonLogging = true,
             autoPugRaids = false,
+            autoPugIncludeLFR = false,
         },
         cfg = {
             enabled = true,

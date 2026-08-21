@@ -236,11 +236,7 @@ function LV.Trade:RecordTrade(fromName, toName, itemLink, source, remoteTS, remo
     local sourceLoot = (remoteSender and lootEventByRemoteID(record, remoteSender, sourceLootID))
         or (not remoteSender and lootEventByID(record, sourceLootID))
         or LV.Loot:FindTradeSource(guildKey, fromName, itemLink, timestamp)
-    if sourceLoot and sourceLoot.src == "bonus" then
-        return nil
-    end
-    local session = LV.Raid:GetActiveSession()
-    if not session and not sourceLoot then
+    if not sourceLoot or sourceLoot.src == "bonus" then
         return nil
     end
 
@@ -273,12 +269,12 @@ function LV.Trade:RecordTrade(fromName, toName, itemLink, source, remoteTS, remo
     local row = {
         id = LV.Store:NewID(record, "trade", "t"),
         ts = timestamp,
-        sid = sourceLoot and sourceLoot.sid or session.id,
+        sid = sourceLoot.sid,
         f = fromID,
         to = toID,
         item = itemKeyID,
         itemID = itemID,
-        loot = sourceLoot and sourceLoot.id or nil,
+        loot = sourceLoot.id,
         src = source or "observed",
         by = remoteBy and LV.Store:NameID(guildKey, remoteBy) or LV.Store:NameID(guildKey, LV.Util:PlayerFullName()),
         sy = remoteSender and remoteTradeID and { [remoteSender] = remoteTradeID } or nil,

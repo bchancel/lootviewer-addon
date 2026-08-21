@@ -40,6 +40,29 @@ local function snapScheduleMinute(value, maximum)
     return math.max(0, math.min(maximum or 1440, value))
 end
 
+function LV.Store:NormalizeHistoricalRaidTimes(record)
+    if type(record) ~= "table" then
+        return 0
+    end
+
+    local repaired = 0
+    local graceSeconds = ((record.cfg and tonumber(record.cfg.endGrace)) or 0) * 60
+    for _, raid in pairs(record.r or {}) do
+        if type(raid) == "table" and raid.lastSource == "ui_edit" then
+            local endedAt = tonumber(raid.en)
+            local scheduledEndAt = tonumber(raid.set)
+            if endedAt and scheduledEndAt then
+                local maximumEndAt = scheduledEndAt + graceSeconds
+                if endedAt > maximumEndAt then
+                    raid.en = maximumEndAt
+                    repaired = repaired + 1
+                end
+            end
+        end
+    end
+    return repaired
+end
+
 function LV.Store:Initialize()
     if type(LootViewerDB) ~= "table" then
         LootViewerDB = {}
@@ -182,6 +205,7 @@ function LV.Store:GuildRecord(guildKey)
     record.next.loot = tonumber(record.next.loot) or 1
     record.next.trade = tonumber(record.next.trade) or 1
     self:NormalizeTeams(record)
+    self:NormalizeHistoricalRaidTimes(record)
 
     self:EnsureReverseMaps(guildKey, record)
     return record

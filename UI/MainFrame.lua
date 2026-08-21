@@ -1152,7 +1152,6 @@ function LV.UI:SetHistoricalRaidAttendance(guildKey, raidID, fullName, status)
         raid.p[nameID] = now
     end
 
-    raid.en = math.max(tonumber(raid.en) or 0, now)
     raid.lastBy = LV.Store:NameID(guildKey, LV.Util:PlayerFullName())
     raid.lastSource = "ui_edit"
     return true
@@ -1190,7 +1189,6 @@ function LV.UI:RemoveHistoricalRaidAttendance(guildKey, raidID, nameID, status)
         raid.late[nameID] = nil
     end
 
-    raid.en = math.max(tonumber(raid.en) or 0, LV.Util:Now())
     raid.lastBy = LV.Store:NameID(guildKey, LV.Util:PlayerFullName())
     raid.lastSource = "ui_edit"
     return true
