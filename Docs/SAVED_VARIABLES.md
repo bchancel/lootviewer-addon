@@ -69,6 +69,12 @@ us:sargeras:sanctimonious
         tz = "central",
         clock24 = false,
         excludeSync = false,
+        rt = 1780000000,
+        ro = {
+          [1] = { t = "raider", p = "tank", s = "melee" },
+          [2] = { t = "trial", p = "healer" },
+          [3] = { t = "helper", p = "ranged" },
+        },
         schedules = {
           { w = 3, h = 20, m = 0, d = 180 },
           { w = 5, h = 20, m = 0, d = 180 },
@@ -100,6 +106,14 @@ us:sargeras:sanctimonious
   x = {},
 }
 ```
+
+Each configured team stores its roster in compact `ro` entries keyed by the
+guild name-dictionary ID. `t` is the roster type (`raider`, `trial`, or
+`helper`), `p` is the primary role, and `s` is the optional secondary role.
+Valid roles are `tank`, `healer`, `melee`, and `ranged`. Missing Raiders and
+Trials are marked no-show when that team's tracked raid ends; Helpers are never
+marked automatically. Each team also stores its latest roster revision in `rt`
+so newer authoritative addon snapshots replace older cached copies safely.
 
 ## Raid Session
 

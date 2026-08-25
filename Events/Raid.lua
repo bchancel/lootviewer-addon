@@ -661,6 +661,7 @@ function LV.Raid:ExpireScheduledSession(guildKey, raidID, endAt)
 
     session.en = tonumber(endAt) or LV.Util:Now()
     session.endReason = "scheduled_end"
+    self:ApplyTeamRosterNoShows(guildKey, record, session)
     record.cur = nil
     local signature = loggerSignature(guildKey, session.iid, session.did)
     self.scheduledEndTimers[tostring(guildKey) .. ":" .. tostring(raidID)] = nil
@@ -714,6 +715,51 @@ function LV.Raid:ScheduleScheduledEnd(guildKey, raidID, endAt)
     end)
 end
 
+function LV.Raid:RosterPlayerAttended(guildKey, session, rosterNameID)
+    rosterNameID = tonumber(rosterNameID)
+    if not rosterNameID or type(session) ~= "table" then
+        return false
+    end
+    local attendanceIDs = {}
+    for _, map in ipairs({ session.p, session.b, session.late, session.out, session.noshow }) do
+        for nameID in pairs(map or {}) do
+            attendanceIDs[tonumber(nameID) or nameID] = true
+        end
+    end
+    if attendanceIDs[rosterNameID] then
+        return true
+    end
+    for actorNameID in pairs(attendanceIDs) do
+        local tag, mainNameID = LV.Guild:InferRosterTag(guildKey, actorNameID)
+        if tag == "alt" and tonumber(mainNameID) == rosterNameID then
+            return true
+        end
+    end
+    return false
+end
+
+function LV.Raid:ApplyTeamRosterNoShows(guildKey, record, session)
+    if not guildKey or type(record) ~= "table" or type(session) ~= "table" then
+        return 0
+    end
+    local roster = LV.Store:TeamRoster(guildKey, session.team or "main")
+    if type(roster) ~= "table" then
+        return 0
+    end
+    self:EnsureAttendanceMaps(session)
+    local timestamp = tonumber(session.en) or LV.Util:Now()
+    local changed = 0
+    for rawNameID, assignment in pairs(roster) do
+        local nameID = tonumber(rawNameID)
+        local rosterType = type(assignment) == "table" and assignment.t or "raider"
+        if nameID and rosterType ~= "helper" and not self:RosterPlayerAttended(guildKey, session, nameID) then
+            session.noshow[nameID] = timestamp
+            changed = changed + 1
+        end
+    end
+    return changed
+end
+
 function LV.Raid:EndSession(reason)
     local guildInfo = LV.Guild:CurrentInfo()
     local session, record = self:GetActiveSession()
@@ -724,6 +770,9 @@ function LV.Raid:EndSession(reason)
 
     session.en = LV.Util:Now()
     session.endReason = reason or ""
+    if guildInfo then
+        self:ApplyTeamRosterNoShows(guildInfo.key, record, session)
+    end
     record.cur = nil
     if guildInfo then
         self.scheduledEndTimers[tostring(guildInfo.key) .. ":" .. tostring(session.id)] = nil

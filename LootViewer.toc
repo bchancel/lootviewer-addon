@@ -15,6 +15,7 @@ Core/Store.lua
 Core/OptionsLoader.lua
 Core/Guild.lua
 Core/Comms.lua
+Core/RosterSync.lua
 Core/DataSync.lua
 Events/Raid.lua
 Events/Loot.lua

@@ -48,6 +48,7 @@ $expectedTocEntries = @(
     "Core/OptionsLoader.lua"
     "Core/Guild.lua"
     "Core/Comms.lua"
+    "Core/RosterSync.lua"
     "Core/DataSync.lua"
     "Events/Raid.lua"
     "Events/Loot.lua"
@@ -178,6 +179,7 @@ $constantsText = Get-Content -LiteralPath (Join-Path $root "Core\Constants.lua")
 $utilText = Get-Content -LiteralPath (Join-Path $root "Core\Util.lua") -Raw
 $guildText = Get-Content -LiteralPath (Join-Path $root "Core\Guild.lua") -Raw
 $commsText = Get-Content -LiteralPath (Join-Path $root "Core\Comms.lua") -Raw
+$rosterSyncText = Get-Content -LiteralPath (Join-Path $root "Core\RosterSync.lua") -Raw
 $dataSyncText = Get-Content -LiteralPath (Join-Path $root "Core\DataSync.lua") -Raw
 $seasonText = Get-Content -LiteralPath (Join-Path $root "Core\Seasons.lua") -Raw
 $tierText = Get-Content -LiteralPath (Join-Path $root "Core\Tier.lua") -Raw
@@ -186,6 +188,7 @@ $lootText = Get-Content -LiteralPath (Join-Path $root "Events\Loot.lua") -Raw
 $tradeText = Get-Content -LiteralPath (Join-Path $root "Events\Trade.lua") -Raw
 $dungeonText = Get-Content -LiteralPath (Join-Path $root "Events\Dungeons.lua") -Raw
 $uiText = Get-Content -LiteralPath (Join-Path $root "UI\MainFrame.lua") -Raw
+$widgetsText = Get-Content -LiteralPath (Join-Path $root "UI\Widgets.lua") -Raw
 $historyMeterText = Get-Content -LiteralPath (Join-Path $root "UI\HistoryMeters.lua") -Raw
 $optionsText = Get-Content -LiteralPath (Join-Path $root "Options\Configuration.lua") -Raw
 if ($storeText -notmatch 'LootViewerDB' -or $storeText -notmatch 'guild') {
@@ -264,15 +267,58 @@ if ($utilText -notmatch 'NormalizeTimezone' -or
     $dataSyncText -notmatch 'EXCLUDED_REMOTE_RAID') {
     throw "Per-team time zones or local-only sync exclusion appear incomplete."
 }
-if ($dataSyncText -notmatch 'SYNC_PROTOCOL_VERSION\s*=\s*2' -or
+if ($dataSyncText -notmatch 'RELIABLE_PROTOCOL_VERSION\s*=\s*3' -or
+    $dataSyncText -notmatch 'SYNC_PROTOCOL_VERSION\s*=\s*5' -or
+    $dataSyncText -notmatch 'function LV\.DataSync:BuildManifest' -or
+    $dataSyncText -notmatch 'function LV\.DataSync:RequestSelected' -or
+    $dataSyncText -notmatch 'function LV\.DataSync:RelinkOrphanedRaidEvents' -or
+    $dataSyncText -notmatch 'function LV\.DataSync:RepairOrphanedRaidEvents' -or
+    $dataSyncText -notmatch 'QueueGenericTransfer' -or
+    $dataSyncText -notmatch 'raidDataOnly\s*=\s*true' -or
+    $dataSyncText -notmatch '\{\s*"loot",\s*lootCounts\[item\.id\]' -or
     $dataSyncText -notmatch 'function LV\.DataSync:BeginReturnChunkSend' -or
     $dataSyncText -notmatch 'SendWhisper\("M"' -or
     $dataSyncText -notmatch 'kind\s*==\s*"M"' -or
+    $dataSyncText -notmatch 'SendWhisper\("R"' -or
+    $dataSyncText -notmatch 'kind\s*==\s*"R"' -or
+    $dataSyncText -notmatch 'RETRY_DELAY' -or
     $dataSyncText -notmatch 'configState\.existingTeams' -or
     $dataSyncText -notmatch 'preserveConfig\s*=\s*true' -or
     $dataSyncText -notmatch 'Two-way sync complete' -or
-    $uiText -notmatch 'Two-Way Guild Merge') {
-    throw "Manual sync no longer performs a backward-compatible two-way raid merge with additive teams."
+    $uiText -notmatch 'Selective Guild Sync' -or
+    $uiText -notmatch 'function LV\.UI:ShowSyncComparison' -or
+    $uiText -notmatch 'function LV\.UI:RefreshSyncComparisonProgress' -or
+    $uiText -notmatch 'row\.rst\s*=\s*raid\.st' -or
+    $dataSyncText -notmatch 'function LV\.DataSync:ProgressForSession' -or
+    $uiText -notmatch 'Sync Selected') {
+    throw "Manual sync no longer provides selective raid comparison or reliable backward-compatible transfers."
+}
+if ($storeText -notmatch 'function LV\.Store:TeamRoster' -or
+    $storeText -notmatch 'function LV\.Store:SetTeamRosterPlayer' -or
+    $storeText -notmatch 'TEAM_ROSTER_TYPES' -or
+    $raidText -notmatch 'function LV\.Raid:ApplyTeamRosterNoShows' -or
+    $raidText -notmatch 'rosterType\s*~=\s*"helper"' -or
+    $uiText -notmatch 'function LV\.UI:RenderTeamRoster' -or
+    $uiText -notmatch 'function LV\.UI:TeamRosterCandidates' -or
+    $uiText -notmatch 'function LV\.UI:LiveTeamRosterCandidates' -or
+    $uiText -notmatch 'function LV\.UI:TeamRosterAccess' -or
+    $uiText -notmatch 'full Name-Realm' -or
+    $uiText -notmatch 'teamRosterTypeValues' -or
+    $uiText -notmatch 'Add to Roster' -or
+    $uiText -notmatch 'Main \(Default\)' -or
+    $uiText -notmatch 'function LV\.UI:MeterDetailMainCandidates' -or
+    $uiText -notmatch 'LV\.Util:IsBlank\(detectedClass\)' -or
+    $widgetsText -notmatch 'function LV\.Widgets:MultiSelectDropdown' -or
+    $widgetsText -notmatch 'function LV\.Widgets:SearchDropdown' -or
+    $uiText -notmatch 'teamRosterRoleOrder' -or
+    $rosterSyncText -notmatch 'function LV\.RosterSync:RequestLatest' -or
+    $rosterSyncText -notmatch 'function LV\.RosterSync:SendSnapshot' -or
+    $rosterSyncText -notmatch 'function LV\.RosterSync:PublishPlayer' -or
+    $rosterSyncText -notmatch 'function LV\.RosterSync:ApplySnapshot' -or
+    $commsText -notmatch 'IsRosterKind' -or
+    $uiText -notmatch 'canManageRoster.*isRosterMember' -or
+    $uiText -notmatch '\{\s*"roster",\s*"attendance",\s*"meter",\s*"history"\s*\}') {
+    throw "Authority-gated per-team roster roles or automatic no-shows appear incomplete."
 }
 if ($dataSyncText -notmatch 'line\("XI"' -or
     $dataSyncText -notmatch 'function LV\.DataSync:ImportLootItemExclusion' -or

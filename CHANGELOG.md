@@ -1,12 +1,14 @@
 # Changelog
 
-## 12.1.6 - 2026-08-21
+## 12.1.6 - 2026-08-25
 
-1. Fixed historical attendance edits incorrectly extending the recorded raid duration. 
-2. Scheduled guild raids now take priority over Pug tracking during the configured pre raid window.
-3. Fixed empty Main and trailing Pug entries being created after a scheduled raid ended.
-4. Added an optional Include LFR setting for automatic Pug raids.
-5. Trades now include only items linked to captured raid loot.
+1. Added a Roster page with raid-team tabs, role groups, cached player search, and authority-based editing.
+2. Added Raider, Trial, and Helper roster types, multi-team assignments, guild roster syncing, and automatic no-shows for missing Raiders and Trials.
+3. Redesigned Player Information with Main, Alt, and Pug tags, main-character search, roster controls, alt lists, attendance details, and a Class field only when needed.
+4. Guild sync now compares raid lists, lets each player choose missing raids, retries lost transfers, and shows live progress.
+5. Fixed restored or transferred raids losing linked attendance, loot, or trade records.
+6. Fixed scheduled raid selection, empty raid records, and historical attendance duration, and added optional LFR tracking.
+7. Trades now include only captured raid loot, and inactive guild-member attendance controls stay hidden.
 
 ## 12.1.5  August 19, 2026
 
