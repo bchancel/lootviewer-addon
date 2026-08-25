@@ -1,5 +1,9 @@
 # Changelog
 
+## 12.1.7 - 2026-08-25
+
+1. Helpers now appear in their own roster category instead of under their primary combat role.
+
 ## 12.1.6 - 2026-08-25
 
 1. Added a Roster page with raid-team tabs, role groups, cached player search, and authority-based editing.

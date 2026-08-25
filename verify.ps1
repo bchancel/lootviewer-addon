@@ -317,7 +317,9 @@ if ($storeText -notmatch 'function LV\.Store:TeamRoster' -or
     $rosterSyncText -notmatch 'function LV\.RosterSync:ApplySnapshot' -or
     $commsText -notmatch 'IsRosterKind' -or
     $uiText -notmatch 'canManageRoster.*isRosterMember' -or
-    $uiText -notmatch '\{\s*"roster",\s*"attendance",\s*"meter",\s*"history"\s*\}') {
+    $uiText -notmatch '\{\s*"roster",\s*"attendance",\s*"meter",\s*"history"\s*\}' -or
+    $uiText -notmatch '\{\s*"tank",\s*"healer",\s*"melee",\s*"ranged",\s*"helper",\s*"unassigned"\s*\}' -or
+    $uiText -notmatch 'rosterType\s*==\s*"helper"\s*and\s*"helper"') {
     throw "Authority-gated per-team roster roles or automatic no-shows appear incomplete."
 }
 if ($dataSyncText -notmatch 'line\("XI"' -or

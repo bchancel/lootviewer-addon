@@ -122,12 +122,13 @@ local teamRosterTypeLabels = {
     helper = "Helper",
 }
 
-local teamRosterRoleOrder = { "tank", "healer", "melee", "ranged", "unassigned" }
+local teamRosterRoleOrder = { "tank", "healer", "melee", "ranged", "helper", "unassigned" }
 local teamRosterRoleLabels = {
     tank = "Tanks",
     healer = "Healers",
     melee = "Melee",
     ranged = "Ranged",
+    helper = "Helpers",
     unassigned = "Unassigned",
 }
 
@@ -2000,7 +2001,9 @@ function LV.UI:RenderTeamRoster()
     end
     for nameID, rosterAssignment in pairs(roster) do
         local fullName = LV.Store:DictionaryValue(guildInfo.key, "n", nameID)
-        local primaryRole = type(rosterAssignment) == "table" and rosterAssignment.p or nil
+        local rosterType = type(rosterAssignment) == "table" and rosterAssignment.t or nil
+        local primaryRole = rosterType == "helper" and "helper"
+            or (type(rosterAssignment) == "table" and rosterAssignment.p or nil)
         primaryRole = grouped[primaryRole] and primaryRole or "unassigned"
         if fullName ~= "" and grouped[primaryRole] then
             grouped[primaryRole][#grouped[primaryRole] + 1] = {
