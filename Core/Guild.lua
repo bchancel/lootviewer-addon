@@ -404,6 +404,112 @@ function LV.Guild:CanModifySession()
     return UnitIsGroupLeader("player") or UnitIsGroupAssistant("player")
 end
 
+function LV.Guild:LoadedGuildRosterMember(fullName)
+    local actual = self:ActualInfo()
+    if not actual or type(GetNumGuildMembers) ~= "function" or type(GetGuildRosterInfo) ~= "function" then
+        return nil
+    end
+    fullName = LV.Util:Trim(fullName):lower()
+    for index = 1, (tonumber(GetNumGuildMembers()) or 0) do
+        local name, rankName, rankIndex, _, classDisplayName, _, _, _, online, _, classFileName =
+            GetGuildRosterInfo(index)
+        name = LV.Util:Trim(name)
+        if name ~= "" and not name:find("-", 1, true) then
+            name = name .. "-" .. actual.realm
+        end
+        if name:lower() == fullName then
+            return {
+                index = index,
+                fullName = name,
+                rankName = LV.Util:Trim(rankName),
+                rankIndex = tonumber(rankIndex) or 99,
+                className = LV.Util:Trim(classFileName or classDisplayName),
+                online = online and 1 or 0,
+            }
+        end
+    end
+    return nil
+end
+
+function LV.Guild:RosterMemberRank(guildKey, fullName)
+    local actual = self:ActualInfo()
+    if actual and actual.key == guildKey
+        and LV.Util:Trim(fullName):lower() == LV.Util:PlayerFullName():lower() then
+        return actual.rankIndex
+    end
+    local member = self:LoadedGuildRosterMember(fullName)
+    if member then
+        return member.rankIndex
+    end
+    local record = LV.Store:GuildRecord(guildKey)
+    local wanted = LV.Util:Trim(fullName):lower()
+    for nameID, entry in pairs((record and record.gr) or {}) do
+        local name = LV.Store:DictionaryValue(guildKey, "n", nameID)
+        if name:lower() == wanted and type(entry) == "table" then
+            return tonumber(entry.r)
+        end
+    end
+    return nil
+end
+
+function LV.Guild:CanAcceptRosterPublisher(guildKey, fullName)
+    local actual = self:ActualInfo()
+    if not actual or actual.key ~= guildKey then
+        return false
+    end
+    local rankIndex = self:RosterMemberRank(guildKey, fullName)
+    if rankIndex == nil then
+        return false
+    end
+    local authority = self:EffectiveAuthority()
+    local mode = authority and authority.mode or "assist"
+    if mode == "all" then
+        return true
+    elseif mode == "trusted" or mode == "rank" then
+        return self:RankAllowed(rankIndex)
+    end
+
+    local wanted = LV.Util:Trim(fullName):lower()
+    local function unitAllowed(unit)
+        if type(UnitExists) ~= "function" or not UnitExists(unit)
+            or LV.Util:UnitFullName(unit):lower() ~= wanted then
+            return nil
+        end
+        if mode == "lead" then
+            return UnitIsGroupLeader(unit) and true or false
+        end
+        return (UnitIsGroupLeader(unit) or UnitIsGroupAssistant(unit)) and true or false
+    end
+    local allowed = unitAllowed("player")
+    if allowed ~= nil then
+        return allowed
+    end
+    if type(IsInRaid) == "function" and IsInRaid() then
+        for index = 1, (tonumber(GetNumGroupMembers()) or 0) do
+            allowed = unitAllowed("raid" .. index)
+            if allowed ~= nil then
+                return allowed
+            end
+        end
+    elseif type(IsInGroup) == "function" and IsInGroup() then
+        for index = 1, (tonumber(GetNumSubgroupMembers()) or 0) do
+            allowed = unitAllowed("party" .. index)
+            if allowed ~= nil then
+                return allowed
+            end
+        end
+    end
+
+    -- Guild recipients outside the publisher's group cannot inspect group
+    -- leadership, so use the configured trusted rank range as the fallback.
+    return self:RankAllowed(rankIndex)
+end
+
+function LV.Guild:CanPublishRoster()
+    local info = self:ActualInfo()
+    return info and self:CanModifySession() and self:CanAcceptRosterPublisher(info.key, LV.Util:PlayerFullName()) or false
+end
+
 function LV.Guild:InferRosterTag(guildKey, nameID)
     local record = LV.Store:GuildRecord(guildKey)
     if not record then

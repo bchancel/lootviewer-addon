@@ -4,7 +4,7 @@ LV.UI = {}
 LV.modules.UI = LV.UI
 
 local ATTENDANCE_PAGE_SIZE = 6
-local METER_DETAIL_PAGE_SIZE = 8
+local METER_DETAIL_PAGE_SIZE = 5
 local HISTORY_PAGE_SIZE = 15
 
 local difficultyLabels = {
@@ -47,6 +47,12 @@ local pageDefinitions = {
         icon = "Interface\\Icons\\INV_Misc_Note_06",
         context = "raid",
     },
+    roster = {
+        label = "Roster",
+        hint = "Raid-team roles and expected attendance.",
+        icon = "Interface\\Icons\\INV_Misc_GroupLooking",
+        context = "raid",
+    },
     meter = {
         label = "Attendance Meter",
         hint = "Scrollable attendance totals across recent raid nights.",
@@ -67,12 +73,12 @@ local pageDefinitions = {
     },
     sync = {
         label = "Sync",
-        hint = "Send this guild's LootViewer data to another player.",
+        hint = "Compare raid lists and import only the missing raids you select.",
         icon = "Interface\\Icons\\Spell_Arcane_PortalDalaran",
     },
 }
 
-local pageOrder = { "config", "attendance", "meter", "history", "dungeonHistory", "sync" }
+local pageOrder = { "config", "roster", "attendance", "meter", "history", "dungeonHistory", "sync" }
 
 local attendanceStatusValues = {
     { value = "here", label = "Here" },
@@ -83,9 +89,46 @@ local attendanceStatusValues = {
 }
 
 local rosterTagValues = {
-    { value = "guild", label = "Guild" },
+    { value = "guild", label = "Main (Default)" },
     { value = "alt", label = "Alt" },
     { value = "pug", label = "Pug" },
+}
+
+local teamRosterRoleValues = {
+    { value = "", label = "Select role" },
+    { value = "tank", label = "Tank" },
+    { value = "healer", label = "Healer" },
+    { value = "melee", label = "Melee" },
+    { value = "ranged", label = "Ranged" },
+}
+
+local teamRosterSecondaryRoleValues = {
+    { value = "", label = "None" },
+    { value = "tank", label = "Tank" },
+    { value = "healer", label = "Healer" },
+    { value = "melee", label = "Melee" },
+    { value = "ranged", label = "Ranged" },
+}
+
+local teamRosterTypeValues = {
+    { value = "raider", label = "Raider" },
+    { value = "trial", label = "Trial" },
+    { value = "helper", label = "Helper" },
+}
+
+local teamRosterTypeLabels = {
+    raider = "Raider",
+    trial = "Trial",
+    helper = "Helper",
+}
+
+local teamRosterRoleOrder = { "tank", "healer", "melee", "ranged", "unassigned" }
+local teamRosterRoleLabels = {
+    tank = "Tanks",
+    healer = "Healers",
+    melee = "Melee",
+    ranged = "Ranged",
+    unassigned = "Unassigned",
 }
 
 local classValues = {
@@ -332,6 +375,9 @@ function LV.UI:Ensure()
         if self.lootItemActionModal then
             self.lootItemActionModal:Hide()
         end
+        if self.syncComparisonModal then
+            self.syncComparisonModal:Hide()
+        end
         if self.teamConfigLayer then
             self.teamConfigLayer:Hide()
         end
@@ -479,12 +525,23 @@ end
 
 function LV.UI:RefreshNavigation()
     local dungeonEnabled = LV.Store:AccountConfig().dungeonLogging == true
+    local guildKey = LV.Guild:CurrentKey()
+    local record = guildKey and LV.Store:GuildRecord(guildKey)
+    local canManageRoster, isRosterMember = self:TeamRosterAccess(guildKey, record)
+    local rosterVisible = record and #(record.cfg.teams or {}) > 0
+        and (canManageRoster or isRosterMember) or false
     if self.currentTab == "dungeonHistory" and not dungeonEnabled then
         self.currentTab = "history"
         self:SetContextValue("raid:" .. self:SelectedSeasonFilter())
     end
+    if self.currentTab == "roster" and not rosterVisible then
+        self.currentTab = "attendance"
+    end
 
     local visibleOrder = { "config", "attendance", "meter", "history", "sync" }
+    if rosterVisible then
+        table.insert(visibleOrder, 3, "roster")
+    end
     if dungeonEnabled then
         table.insert(visibleOrder, 5, "dungeonHistory")
     end
@@ -496,18 +553,24 @@ function LV.UI:RefreshNavigation()
         button:SetShown(visible[key] == true)
     end
 
-    local positions = {
-        config = -180,
-        attendance = -242,
-        meter = -284,
-        history = -326,
-        dungeonHistory = -390,
-    }
-    for key, y in pairs(positions) do
+    local configButton = self.navButtons.config
+    configButton:ClearAllPoints()
+    configButton:SetPoint("TOPLEFT", 18, -180)
+
+    local raidY = -242
+    for _, key in ipairs({ "roster", "attendance", "meter", "history" }) do
         local button = self.navButtons[key]
-        button:ClearAllPoints()
-        button:SetPoint("TOPLEFT", 18, y)
+        if visible[key] then
+            button:ClearAllPoints()
+            button:SetPoint("TOPLEFT", 18, raidY)
+            raidY = raidY - 42
+        end
     end
+
+    local dungeonHeaderY = raidY - 22
+    local dungeonButton = self.navButtons.dungeonHistory
+    dungeonButton:ClearAllPoints()
+    dungeonButton:SetPoint("TOPLEFT", 18, dungeonHeaderY - 16)
 
     local sync = self.navButtons.sync
     sync:ClearAllPoints()
@@ -517,7 +580,7 @@ function LV.UI:RefreshNavigation()
     self.raidNavHeader:SetPoint("TOPLEFT", 22, -226)
     self.raidNavHeader:Show()
     self.dungeonNavHeader:ClearAllPoints()
-    self.dungeonNavHeader:SetPoint("TOPLEFT", 22, -374)
+    self.dungeonNavHeader:SetPoint("TOPLEFT", 22, dungeonHeaderY)
     self.dungeonNavHeader:SetShown(dungeonEnabled)
 end
 
@@ -848,6 +911,8 @@ function LV.UI:Refresh()
     self:ClearContent()
     if self.currentTab == "attendance" then
         self:RenderAttendance()
+    elseif self.currentTab == "roster" then
+        self:RenderTeamRoster()
     elseif self.currentTab == "meter" then
         self:RenderAttendanceMeter()
     elseif self.currentTab == "sync" then
@@ -939,6 +1004,7 @@ function LV.UI:EventMatchesRaidTag(record, row, teamID)
     end
     local raid = type(record) == "table" and type(record.r) == "table" and row and row.sid and record.r[row.sid]
     return self:RaidMatchesTag(raid, teamID)
+        or (type(raid) ~= "table" and row and tostring(row.rt or "") == tostring(teamID))
 end
 
 function LV.UI:CanModifyHistoricalRaid(raidID, raid)
@@ -960,6 +1026,15 @@ function LV.UI:DeleteRaid(guildKey, raidID)
         return
     end
 
+    for _, rows in ipairs({ record.l or {}, record.t or {} }) do
+        for _, row in ipairs(rows) do
+            if type(row) == "table" and tostring(row.sid or "") == tostring(raidID) then
+                row.rt = raid.team or "main"
+                row.rst = raid.st
+                row.rii = raid.iid
+            end
+        end
+    end
     if record.cur == raidID then
         record.cur = nil
     end
@@ -1152,7 +1227,6 @@ function LV.UI:SetHistoricalRaidAttendance(guildKey, raidID, fullName, status)
         raid.p[nameID] = now
     end
 
-    raid.en = math.max(tonumber(raid.en) or 0, now)
     raid.lastBy = LV.Store:NameID(guildKey, LV.Util:PlayerFullName())
     raid.lastSource = "ui_edit"
     return true
@@ -1190,7 +1264,6 @@ function LV.UI:RemoveHistoricalRaidAttendance(guildKey, raidID, nameID, status)
         raid.late[nameID] = nil
     end
 
-    raid.en = math.max(tonumber(raid.en) or 0, LV.Util:Now())
     raid.lastBy = LV.Store:NameID(guildKey, LV.Util:PlayerFullName())
     raid.lastSource = "ui_edit"
     return true
@@ -1498,6 +1571,498 @@ function LV.UI:AttendanceMeterRows(guildKey, record, range, teamID, showPugs)
     end
 
     return rows, #raidRows, #raidRows, guildRows, pugRows
+end
+
+function LV.UI:TeamRosterAccess(guildKey, record)
+    local canManage = LV.Guild:CanModifySession()
+    if not guildKey or type(record) ~= "table" then
+        return canManage, false
+    end
+    local playerNameID = LV.Store:NameID(guildKey, LV.Util:PlayerFullName())
+    for _, team in ipairs((record.cfg and record.cfg.teams) or {}) do
+        if type(team) == "table" and type(team.ro) == "table" and team.ro[playerNameID] then
+            return canManage, true
+        end
+    end
+    return canManage, false
+end
+
+function LV.UI:TeamRosterCandidates(guildKey, record, teamID)
+    local candidatesByID = {}
+    local function include(nameID, source)
+        nameID = tonumber(nameID)
+        local fullName = nameID and LV.Store:DictionaryValue(guildKey, "n", nameID) or ""
+        if fullName == "" then
+            return
+        end
+        local candidate = candidatesByID[nameID]
+        if not candidate then
+            candidate = {
+                id = nameID,
+                fullName = fullName,
+                name = LV.Util:ShortName(fullName),
+            }
+            candidatesByID[nameID] = candidate
+        end
+        candidate[source] = true
+    end
+
+    for nameID in pairs((record and record.gr) or {}) do
+        include(nameID, "guild")
+    end
+    local team = LV.Store:GetTeamByID(record, teamID)
+    for nameID in pairs((team and team.ro) or {}) do
+        include(nameID, "teamRoster")
+    end
+    for _, raid in pairs((record and record.r) or {}) do
+        if type(raid) == "table" and tostring(raid.team or "main") == tostring(teamID or "main") then
+            for _, map in ipairs({ raid.p, raid.b, raid.late, raid.out, raid.noshow }) do
+                for nameID in pairs(map or {}) do
+                    include(nameID, "raid")
+                end
+            end
+            for _, kill in ipairs(raid.kills or {}) do
+                for _, list in ipairs({ kill.p, kill.bench, kill.late, kill.out, kill.noshow }) do
+                    for _, nameID in ipairs(list or {}) do
+                        include(nameID, "raid")
+                    end
+                end
+            end
+        end
+    end
+
+    local candidates = {}
+    for _, candidate in pairs(candidatesByID) do
+        candidates[#candidates + 1] = candidate
+    end
+    table.sort(candidates, function(a, b)
+        return compareText(a.name, b.name)
+    end)
+    return candidates
+end
+
+function LV.UI:LiveTeamRosterCandidates(guildInfo, query, limit)
+    query = LV.Util:Trim(query):lower()
+    limit = math.max(1, tonumber(limit) or 7)
+    if #query < 2 then
+        return {}
+    end
+
+    local candidates = {}
+    local candidatesByName = {}
+    local function include(fullName, className, source, fields)
+        fullName = LV.Util:Trim(fullName)
+        if fullName == "" then
+            return
+        end
+        if not fullName:find("-", 1, true) then
+            fullName = fullName .. "-" .. tostring((guildInfo and guildInfo.realm) or LV.Util:RealmName())
+        end
+        local shortName = LV.Util:ShortName(fullName)
+        if not fullName:lower():find(query, 1, true) and not shortName:lower():find(query, 1, true) then
+            return
+        end
+
+        local key = fullName:lower()
+        local candidate = candidatesByName[key]
+        if not candidate then
+            candidate = {
+                fullName = fullName,
+                name = shortName,
+            }
+            candidatesByName[key] = candidate
+            candidates[#candidates + 1] = candidate
+        end
+        candidate[source] = true
+        candidate.className = LV.Util:Trim(className) ~= "" and LV.Util:Trim(className) or candidate.className
+        for field, value in pairs(fields or {}) do
+            candidate[field] = value
+        end
+    end
+
+    local function inspectUnit(unit)
+        if #candidates >= limit or type(UnitExists) ~= "function" or not UnitExists(unit) then
+            return
+        end
+        local _, className = UnitClass(unit)
+        include(LV.Util:UnitFullName(unit), className, "currentRaid", {
+            liveGuild = type(UnitIsInMyGuild) == "function" and UnitIsInMyGuild(unit) or false,
+        })
+    end
+
+    inspectUnit("player")
+    if type(IsInRaid) == "function" and IsInRaid() then
+        for index = 1, (tonumber(GetNumGroupMembers()) or 0) do
+            inspectUnit("raid" .. index)
+        end
+    elseif type(IsInGroup) == "function" and IsInGroup() then
+        for index = 1, (tonumber(GetNumSubgroupMembers()) or 0) do
+            inspectUnit("party" .. index)
+        end
+    end
+
+    -- Read only Blizzard's already-loaded guild list. Do not request a full roster refresh here.
+    local total = type(GetNumGuildMembers) == "function" and tonumber(GetNumGuildMembers()) or 0
+    for index = 1, total do
+        if #candidates >= limit then
+            break
+        end
+        local name, rankName, rankIndex, _, classDisplayName, _, _, _, online, _, classFileName = GetGuildRosterInfo(index)
+        include(name, classFileName or classDisplayName, "liveGuild", {
+            rankName = LV.Util:Trim(rankName),
+            rankIndex = tonumber(rankIndex) or 99,
+            online = online and 1 or 0,
+        })
+    end
+
+    return candidates
+end
+
+function LV.UI:RenderTeamRoster()
+    local guildInfo = self:CurrentGuildOrMessage()
+    if not guildInfo then
+        return
+    end
+    local record = LV.Store:GuildRecord(guildInfo.key)
+    local cfg = record and record.cfg
+    local teams = (cfg and cfg.teams) or {}
+    local canManageRoster, isRosterMember = self:TeamRosterAccess(guildInfo.key, record)
+    if #teams == 0 or (not canManageRoster and not isRosterMember) then
+        self:SetPageHeader("Roster", "Roster access is limited to authorized managers and listed team members.", guildInfo)
+        local message = LV.Widgets:Text(self.content, "You are not currently listed on a raid-team roster.")
+        message:SetPoint("TOPLEFT", 24, -112)
+        message:SetTextColor(unpack(LV.Widgets.colors.muted))
+        return
+    end
+
+    local team = LV.Store:GetTeamByID(record, self.rosterTeamID)
+    if not team then
+        team = teams[1]
+        self.rosterTeamID = team.id
+        self.rosterSelectedNameID = nil
+        self.rosterCandidateID = nil
+    end
+    self.rosterInitialLoad = self.rosterInitialLoad or {}
+    if not self.rosterInitialLoad[guildInfo.key] then
+        self.rosterInitialLoad[guildInfo.key] = true
+        if LV.RosterSync then
+            LV.RosterSync:RequestLatest(true)
+        end
+    end
+    local roster = LV.Store:TeamRoster(guildInfo.key, team.id) or {}
+    self:SetPageHeader("Roster", canManageRoster and pageDefinitions.roster.hint
+        or "Read-only raid-team roster. Self-service availability controls will be added here later.", guildInfo)
+
+    local availableWidth = math.max(760, self.content:GetWidth() - 48)
+    local tabWidth = math.max(86, math.min(150, math.floor((availableWidth - ((#teams - 1) * 4)) / #teams)))
+    local previousTab
+    for _, tabTeam in ipairs(teams) do
+        local teamID = tabTeam.id
+        local tab = LV.Widgets:Tab(self.content, tabTeam.name, tabWidth, 34, function()
+            self.rosterTeamID = teamID
+            self.rosterSelectedNameID = nil
+            self.rosterCandidateID = nil
+            self.rosterSearch = ""
+            self:Refresh()
+        end)
+        if previousTab then
+            tab:SetPoint("LEFT", previousTab, "RIGHT", 4, 0)
+        else
+            tab:SetPoint("TOPLEFT", 24, -102)
+        end
+        LV.Widgets:SetButtonActive(tab, teamID == team.id)
+        previousTab = tab
+    end
+
+    local gap = 16
+    local panelWidth = math.floor((availableWidth - gap) / 2)
+    local leftPanel = LV.Widgets:Section(self.content, canManageRoster and "Add Player" or "Roster Access", 150)
+    leftPanel:SetPoint("TOPLEFT", 24, -150)
+    leftPanel:SetWidth(panelWidth)
+    local rightPanel = LV.Widgets:Section(self.content, "Selected Player", 150)
+    rightPanel:SetPoint("TOPLEFT", leftPanel, "TOPRIGHT", gap, 0)
+    rightPanel:SetWidth(panelWidth)
+
+    local candidates = self:TeamRosterCandidates(guildInfo.key, record, team.id)
+    local searchWidth = math.max(180, panelWidth - 116)
+    local search = LV.Widgets:EditBox(leftPanel, searchWidth, 28)
+    search:SetPoint("TOPLEFT", 12, -48)
+    search:SetText(self.rosterSearch or "")
+
+    local resultFrame = CreateFrame("Frame", nil, self.content, "BackdropTemplate")
+    resultFrame:SetPoint("TOPLEFT", search, "BOTTOMLEFT", 0, -2)
+    resultFrame:SetSize(searchWidth, 8)
+    resultFrame:SetFrameStrata("TOOLTIP")
+    resultFrame:SetFrameLevel(self.frame:GetFrameLevel() + 600)
+    LV.Widgets:ApplyBackdrop(resultFrame, LV.Widgets.colors.canvasAlt, LV.Widgets.colors.borderStrong)
+    resultFrame:Hide()
+    local resultRows = {}
+    for index = 1, 7 do
+        local row = LV.Widgets:Button(resultFrame, "", searchWidth - 4, 24, nil, "ghost")
+        row:SetPoint("TOPLEFT", 2, -2 - ((index - 1) * 24))
+        resultRows[index] = row
+    end
+
+    local function resolveCandidate(candidate)
+        if type(candidate) ~= "table" then
+            return nil
+        end
+        local nameID = tonumber(candidate.id)
+        if nameID then
+            return nameID
+        end
+
+        local fullName = LV.Util:Trim(candidate.fullName)
+        if fullName == "" or not fullName:find("-", 1, true) then
+            return nil
+        end
+        if candidate.liveGuild then
+            LV.Store:AddRosterMember(guildInfo.key, fullName, {
+                r = tonumber(candidate.rankIndex) or 99,
+                rn = LV.Util:Trim(candidate.rankName),
+                c = self:NormalizeClassToken(candidate.className),
+                onl = candidate.online,
+            })
+        end
+        nameID = LV.Store:NameID(guildInfo.key, fullName)
+        if nameID then
+            local className = self:NormalizeClassToken(candidate.className)
+            if className ~= "" then
+                LV.Store:SetPlayerClass(guildInfo.key, nameID, className)
+            end
+            candidate.id = nameID
+        end
+        return nameID
+    end
+
+    local function filteredCandidates(query)
+        local rawQuery = LV.Util:Trim(query)
+        query = rawQuery:lower()
+        local matches = {}
+        local matchedNames = {}
+        if query == "" then
+            return matches
+        end
+        local function include(candidate)
+            local key = candidate and LV.Util:Trim(candidate.fullName):lower() or ""
+            if key == "" or matchedNames[key] or #matches >= #resultRows then
+                return
+            end
+            matchedNames[key] = true
+            matches[#matches + 1] = candidate
+        end
+        for _, candidate in ipairs(candidates) do
+            if candidate.fullName:lower():find(query, 1, true)
+                or candidate.name:lower():find(query, 1, true) then
+                include(candidate)
+            end
+        end
+        for _, candidate in ipairs(self:LiveTeamRosterCandidates(guildInfo, rawQuery, #resultRows)) do
+            include(candidate)
+        end
+        if rawQuery:match("^[^%s%-]+%-%S+$") and not matchedNames[query] then
+            include({
+                fullName = rawQuery,
+                name = LV.Util:ShortName(rawQuery),
+                manual = true,
+            })
+        end
+        return matches
+    end
+
+    local function updateResults(value)
+        self.rosterSearch = value
+        local chosenID = tonumber(self.rosterCandidateID)
+        local chosenName = chosenID and LV.Store:DictionaryValue(guildInfo.key, "n", chosenID) or ""
+        local normalizedQuery = LV.Util:Trim(value):lower()
+        if chosenName ~= "" and normalizedQuery ~= chosenName:lower()
+            and normalizedQuery ~= LV.Util:ShortName(chosenName):lower() then
+            self.rosterCandidateID = nil
+        end
+        local matches = canManageRoster and filteredCandidates(value) or {}
+        for index, row in ipairs(resultRows) do
+            local candidate = matches[index]
+            row:SetShown(candidate ~= nil)
+            if candidate then
+                local source = candidate.manual and "Manual character"
+                    or candidate.currentRaid and "Current raid"
+                    or candidate.liveGuild and "Live guild roster"
+                    or candidate.teamRoster and "Team roster"
+                    or candidate.guild and "Guild"
+                    or "Raid history"
+                if candidate.guild and candidate.raid then
+                    source = "Guild + raid history"
+                end
+                row.text:SetText(candidate.name .. "  |cff7f8fa6" .. source .. "|r")
+                row.candidate = candidate
+                row:SetScript("OnClick", function()
+                    local nameID = resolveCandidate(candidate)
+                    if not nameID then
+                        return
+                    end
+                    self.rosterCandidateID = nameID
+                    self.rosterSelectedNameID = nameID
+                    self.rosterSearch = candidate.fullName
+                    resultFrame:Hide()
+                    self:Refresh()
+                end)
+            end
+        end
+        resultFrame:SetHeight(math.max(8, (#matches * 24) + 4))
+        resultFrame:SetShown(#matches > 0)
+        return matches
+    end
+
+    search:SetScript("OnTextChanged", function(edit)
+        updateResults(edit:GetText())
+    end)
+    search:SetScript("OnEscapePressed", function(edit)
+        resultFrame:Hide()
+        edit:ClearFocus()
+    end)
+
+    local add = LV.Widgets:Button(leftPanel, "Add", 76, 28, function()
+        if not canManageRoster then
+            return
+        end
+        local nameID = tonumber(self.rosterCandidateID)
+        if not nameID then
+            local matches = filteredCandidates(search:GetText())
+            nameID = resolveCandidate(matches[1])
+        end
+        if not nameID then
+            LV:Print("Choose a result, or enter a full Name-Realm for an outside player.")
+            return
+        end
+        self.rosterSelectedNameID = nameID
+        self.rosterCandidateID = nameID
+        self.rosterSearch = LV.Util:ShortName(LV.Store:DictionaryValue(guildInfo.key, "n", nameID))
+        self:ShowPlayerDetailForName(guildInfo.key, nameID, team.id)
+    end, "success")
+    add:SetPoint("LEFT", search, "RIGHT", 10, 0)
+    search:SetShown(canManageRoster)
+    add:SetShown(canManageRoster)
+    search:SetScript("OnEnterPressed", function(edit)
+        edit:ClearFocus()
+        add:Click()
+    end)
+
+    local searchHint = LV.Widgets:Text(leftPanel, canManageRoster
+        and "Find a player, then Add opens Player Details for tag, type, and role assignment. Full Name-Realm adds anyone else."
+        or "You are listed on a raid roster. Viewing is available; roster changes require the configured authority.")
+    searchHint:SetPoint("TOPLEFT", 12, canManageRoster and -88 or -52)
+    searchHint:SetWidth(panelWidth - 24)
+    searchHint:SetWordWrap(true)
+    searchHint:SetTextColor(unpack(LV.Widgets.colors.muted))
+
+    local selectedNameID = tonumber(self.rosterSelectedNameID)
+    local selectedFullName = selectedNameID and LV.Store:DictionaryValue(guildInfo.key, "n", selectedNameID) or ""
+    local assignment = selectedNameID and roster[selectedNameID] or nil
+    if selectedFullName == "" then
+        local empty = LV.Widgets:Text(rightPanel, "Select a search result, or click a roster name to open Player Details.")
+        empty:SetPoint("TOPLEFT", 12, -52)
+        empty:SetWidth(panelWidth - 24)
+        empty:SetWordWrap(true)
+        empty:SetTextColor(unpack(LV.Widgets.colors.muted))
+    else
+        local selectedName = LV.Widgets:Text(rightPanel, LV.Util:ShortName(selectedFullName))
+        selectedName:SetPoint("TOPLEFT", 12, -43)
+        self:SetNameClassColor(selectedName, guildInfo.key, selectedNameID)
+        local summaryText = "Not assigned to " .. tostring(team.name)
+        if assignment then
+            local rosterType = teamRosterTypeLabels[assignment.t or "raider"] or "Raider"
+            local primary = teamRosterRoleLabels[assignment.p or "unassigned"] or "Unassigned"
+            local secondary = assignment.s and teamRosterRoleLabels[assignment.s] or nil
+            summaryText = rosterType .. " - " .. primary:gsub("s$", "")
+                .. (secondary and (" / " .. secondary:gsub("s$", "")) or "")
+        end
+        local summary = LV.Widgets:Text(rightPanel, summaryText)
+        summary:SetPoint("TOPLEFT", 12, -68)
+        summary:SetTextColor(unpack(LV.Widgets.colors.muted))
+
+        local edit = LV.Widgets:Button(rightPanel, assignment and "Edit Player" or "Add Player", 108, 26, function()
+            self:ShowPlayerDetailForName(guildInfo.key, selectedNameID, team.id)
+        end, assignment and nil or "success")
+        edit:SetPoint("TOPLEFT", 12, -98)
+        edit:SetEnabled(canManageRoster or assignment ~= nil)
+    end
+
+    local scroll, rosterContent = LV.Widgets:ScrollFrame(self.content)
+    scroll:SetPoint("TOPLEFT", 24, -316)
+    scroll:SetPoint("BOTTOMRIGHT", -24, 20)
+    local contentWidth = math.max(720, availableWidth - 28)
+    rosterContent:SetWidth(contentWidth)
+    local columnGap = 10
+    local columnWidth = math.floor((contentWidth - (columnGap * 3) - 8) / 4)
+    local grouped = {}
+    for _, role in ipairs(teamRosterRoleOrder) do
+        grouped[role] = {}
+    end
+    for nameID, rosterAssignment in pairs(roster) do
+        local fullName = LV.Store:DictionaryValue(guildInfo.key, "n", nameID)
+        local primaryRole = type(rosterAssignment) == "table" and rosterAssignment.p or nil
+        primaryRole = grouped[primaryRole] and primaryRole or "unassigned"
+        if fullName ~= "" and grouped[primaryRole] then
+            grouped[primaryRole][#grouped[primaryRole] + 1] = {
+                id = tonumber(nameID) or nameID,
+                fullName = fullName,
+                name = LV.Util:ShortName(fullName),
+                assignment = rosterAssignment,
+            }
+        end
+    end
+
+    local y = 0
+    for _, role in ipairs(teamRosterRoleOrder) do
+        local entries = grouped[role]
+        table.sort(entries, function(a, b) return compareText(a.name, b.name) end)
+        local heading = LV.Widgets:Text(rosterContent, teamRosterRoleLabels[role] .. ":")
+        heading:SetPoint("TOPLEFT", 4, -y)
+        heading:SetTextColor(unpack(LV.Widgets.colors.navigation))
+        y = y + 28
+        if #entries == 0 then
+            local empty = LV.Widgets:Text(rosterContent, "No players assigned")
+            empty:SetPoint("TOPLEFT", 14, -y)
+            empty:SetTextColor(unpack(LV.Widgets.colors.muted))
+            y = y + 30
+        else
+            for index, entry in ipairs(entries) do
+                local column = (index - 1) % 4
+                local rowIndex = math.floor((index - 1) / 4)
+                local button = LV.Widgets:Button(rosterContent, entry.name, columnWidth, 28, function()
+                    self.rosterSelectedNameID = entry.id
+                    self.rosterCandidateID = entry.id
+                    self.rosterSearch = entry.name
+                    self:ShowPlayerDetailForName(guildInfo.key, entry.id, team.id)
+                end, "ghost")
+                button:SetPoint("TOPLEFT", 4 + (column * (columnWidth + columnGap)), -y - (rowIndex * 32))
+                self:SetNameClassColor(button.text, guildInfo.key, entry.id)
+                button:HookScript("OnEnter", function()
+                    button.text:SetTextColor(unpack(LV.Widgets.colors.yellow))
+                end)
+                button:HookScript("OnLeave", function()
+                    self:SetNameClassColor(button.text, guildInfo.key, entry.id)
+                end)
+                button:HookScript("OnMouseDown", function()
+                    button.text:SetTextColor(unpack(LV.Widgets.colors.yellow))
+                end)
+                button:HookScript("OnMouseUp", function()
+                    if button:IsMouseOver() then
+                        button.text:SetTextColor(unpack(LV.Widgets.colors.yellow))
+                    else
+                        self:SetNameClassColor(button.text, guildInfo.key, entry.id)
+                    end
+                end)
+                local secondaryLabel = entry.assignment.s and teamRosterRoleLabels[entry.assignment.s] or nil
+                local rosterTypeLabel = teamRosterTypeLabels[entry.assignment.t or "raider"] or "Raider"
+                LV.Widgets:SetTooltip(button, entry.fullName
+                    .. "\nType: " .. rosterTypeLabel
+                    .. (secondaryLabel and ("\nSecondary: " .. secondaryLabel:gsub("s$", "")) or ""))
+            end
+            y = y + (math.ceil(#entries / 4) * 32) + 8
+        end
+    end
+    rosterContent:SetHeight(math.max(y + 12, scroll:GetHeight()))
 end
 
 function LV.UI:RenderAttendance()
@@ -2068,7 +2633,7 @@ function LV.UI:EnsureMeterDetailFrame()
     end
 
     local frame = CreateFrame("Frame", "LootViewerMeterDetailFrame", UIParent, "BackdropTemplate")
-    frame:SetSize(700, 540)
+    frame:SetSize(700, 640)
     frame:SetPoint("CENTER")
     frame:SetFrameStrata("FULLSCREEN_DIALOG")
     frame:SetFrameLevel(1200)
@@ -2130,13 +2695,19 @@ function LV.UI:RefreshMeterDetail(guildKey, playerID)
     end
 end
 
-function LV.UI:ShowPlayerDetailForName(guildKey, nameID)
-    local playerID = self:AttendanceRollupID(guildKey, nameID)
+function LV.UI:ShowPlayerDetailForName(guildKey, nameID, teamID)
+    local playerID = teamID and tonumber(nameID) or self:AttendanceRollupID(guildKey, nameID)
     if not playerID then
         return
     end
 
     local record = LV.Store:GuildRecord(guildKey)
+    local cfg = LV.Store:GetConfig(guildKey)
+    self.meterDetailRosterTeamID = teamID
+        or (self.meterTeamID ~= "all" and self.meterTeamID)
+        or (cfg and cfg.selectedTeam)
+        or ((cfg and cfg.teams and cfg.teams[1]) and cfg.teams[1].id)
+        or "main"
     local searches = {
         { range = self.meterRange or "months:3", team = self.meterTeamID or "all" },
         { range = "all", team = "all" },
@@ -2152,28 +2723,67 @@ function LV.UI:ShowPlayerDetailForName(guildKey, nameID)
             end
         end
     end
+
+    local fullName = LV.Store:DictionaryValue(guildKey, "n", playerID)
+    if fullName ~= "" then
+        self.meterDetailOffset = 0
+        self:ShowMeterPlayerDetail(guildKey, {
+            id = playerID,
+            fullName = fullName,
+            name = LV.Util:ShortName(fullName),
+            attended = 0,
+            nights = {},
+        }, 0)
+    end
 end
 
-function LV.UI:RenderMeterDetailAlts(frame, guildKey, row)
-    local label = self:TrackMeterDetail(LV.Widgets:Label(frame, "Alts"))
-    label:SetPoint("TOPLEFT", 24, -118)
+function LV.UI:DrawMeterDetailHeading(frame, label, y)
+    local heading = self:TrackMeterDetail(LV.Widgets:Text(frame, label))
+    heading:SetPoint("TOPLEFT", 24, y)
+    heading:SetTextColor(unpack(LV.Widgets.colors.navigation))
+
+    local divider = self:TrackMeterDetail(LV.Widgets:Line(frame, 1, LV.Widgets.colors.border))
+    divider:SetPoint("LEFT", heading, "RIGHT", 12, 0)
+    divider:SetPoint("RIGHT", frame, "RIGHT", -24, 0)
+    return heading
+end
+
+function LV.UI:MeterDetailMainCandidates(guildKey, playerID)
+    local record = LV.Store:GuildRecord(guildKey)
+    local candidates = {}
+    for id, fullName in ipairs((record and record.d and record.d.n) or {}) do
+        if tonumber(id) ~= tonumber(playerID) and LV.Util:Trim(fullName) ~= "" then
+            candidates[#candidates + 1] = {
+                value = fullName,
+                label = LV.Util:ShortName(fullName),
+            }
+        end
+    end
+    table.sort(candidates, function(a, b)
+        return compareText(a.label, b.label)
+    end)
+    return candidates
+end
+
+function LV.UI:RenderMeterDetailAlts(frame, guildKey, row, headingY)
+    self:DrawMeterDetailHeading(frame, "Alts", headingY)
 
     local alts = self:AltRowsForMain(guildKey, row.id)
+    local contentY = headingY - 28
     if #alts == 0 then
         local empty = self:TrackMeterDetail(LV.Widgets:Text(frame, "None"))
         empty:SetTextColor(unpack(LV.Widgets.colors.muted))
-        empty:SetPoint("LEFT", label, "RIGHT", 14, 0)
-        return
+        empty:SetPoint("TOPLEFT", 24, contentY)
+        return contentY - 34
     end
 
-    local startX = 78
-    local startY = -118
+    local startX = 24
     for index, alt in ipairs(alts) do
-        local x = startX + (((index - 1) % 4) * 142)
-        local y = startY - (math.floor((index - 1) / 4) * 24)
+        local x = startX + (((index - 1) % 4) * 154)
+        local y = contentY - (math.floor((index - 1) / 4) * 24)
         local name = self:TrackMeterDetail(LV.Widgets:Text(frame, alt.name))
         name:SetPoint("TOPLEFT", x, y)
-        name:SetWidth(94)
+        name:SetWidth(106)
         name:SetWordWrap(false)
         self:SetNameClassColor(name, guildKey, alt.id)
 
@@ -2182,12 +2792,13 @@ function LV.UI:RenderMeterDetailAlts(frame, guildKey, row)
             self:Refresh()
             self:RefreshMeterDetail(guildKey, row.id)
         end))
-        remove:SetPoint("TOPLEFT", x + 96, y + 2)
+        remove:SetPoint("TOPLEFT", x + 108, y + 2)
         LV.Widgets:SetTooltip(remove, "Untag " .. alt.name .. " as an alt.")
     end
+    return contentY - (math.ceil(#alts / 4) * 24) - 10
 end
 
-function LV.UI:RenderMeterDetailGrid(frame, guildKey, row, raidCount)
+function LV.UI:RenderMeterDetailGrid(frame, guildKey, row, raidCount, titleY)
     local nights = row.nights or {}
     self.meterDetailOffset = tonumber(self.meterDetailOffset) or 0
     if self.meterDetailOffset >= #nights then
@@ -2198,7 +2809,7 @@ function LV.UI:RenderMeterDetailGrid(frame, guildKey, row, raidCount)
         self.meterDetailOffset = math.max(0, (self.meterDetailOffset or 0) - METER_DETAIL_PAGE_SIZE)
         self:ShowMeterPlayerDetail(guildKey, row, raidCount)
     end))
-    newer:SetPoint("TOPRIGHT", -70, -202)
+    newer:SetPoint("TOPRIGHT", -70, titleY + 2)
 
     local older = self:TrackMeterDetail(LV.Widgets:Button(frame, ">", 26, 22, function()
         self.meterDetailOffset = math.min(math.max(0, #nights - METER_DETAIL_PAGE_SIZE), (self.meterDetailOffset or 0) + METER_DETAIL_PAGE_SIZE)
@@ -2214,7 +2825,7 @@ function LV.UI:RenderMeterDetailGrid(frame, guildKey, row, raidCount)
     end
 
     local startX = 28
-    local startY = -232
+    local startY = titleY - 30
     for index = self.meterDetailOffset + 1, math.min(#nights, self.meterDetailOffset + METER_DETAIL_PAGE_SIZE) do
         local night = nights[index]
         local rowIndex = index - self.meterDetailOffset - 1
@@ -2270,6 +2881,34 @@ end
 function LV.UI:ShowMeterPlayerDetail(guildKey, row, raidCount)
     local frame = self:EnsureMeterDetailFrame()
     self:ClearMeterDetail()
+    local record = LV.Store:GuildRecord(guildKey)
+    local cfg = LV.Store:GetConfig(guildKey)
+    local rosterTeams = {}
+    local rosterAssignments = {}
+    local rosterAssignmentCount = 0
+    local firstRosterTeamID
+    for _, configuredTeam in ipairs((cfg and cfg.teams) or {}) do
+        local teamRoster = LV.Store:TeamRoster(guildKey, configuredTeam.id)
+        if teamRoster then
+            rosterTeams[#rosterTeams + 1] = { value = configuredTeam.id, label = configuredTeam.name }
+            local assignment = teamRoster[tonumber(row.id)]
+            if assignment then
+                rosterAssignments[configuredTeam.id] = assignment
+                rosterAssignmentCount = rosterAssignmentCount + 1
+                firstRosterTeamID = firstRosterTeamID or configuredTeam.id
+            end
+        end
+    end
+
+    local preferredTeam = LV.Store:GetTeamByID(record, self.meterDetailRosterTeamID)
+    if not preferredTeam or not LV.Store:TeamRoster(guildKey, preferredTeam.id) then
+        preferredTeam = rosterTeams[1] and LV.Store:GetTeamByID(record, rosterTeams[1].value) or nil
+        self.meterDetailRosterTeamID = preferredTeam and preferredTeam.id or "main"
+    end
+    local sourceTeamID = rosterAssignments[self.meterDetailRosterTeamID]
+        and self.meterDetailRosterTeamID or firstRosterTeamID
+    local sourceAssignment = sourceTeamID and rosterAssignments[sourceTeamID] or nil
+    local canManageRoster = LV.Guild:CanModifySession()
     local currentTag, currentMainID = LV.Guild:InferRosterTag(guildKey, row.id)
     local currentMainName = currentMainID and LV.Store:DictionaryValue(guildKey, "n", currentMainID) or ""
     if self.meterDetailPlayerID ~= row.id then
@@ -2277,6 +2916,18 @@ function LV.UI:ShowMeterPlayerDetail(guildKey, row, raidCount)
         self.meterDetailTag = currentTag or "guild"
         self.meterDetailMain = currentMainName ~= "" and LV.Util:ShortName(currentMainName) or ""
         self.meterDetailClass = self:PlayerClassToken(guildKey, row.id)
+        self.meterDetailRosterStatePlayerID = nil
+    end
+    if self.meterDetailRosterStatePlayerID ~= row.id then
+        self.meterDetailRosterStatePlayerID = row.id
+        self.meterDetailRosterTeams = {}
+        for teamID in pairs(rosterAssignments) do
+            self.meterDetailRosterTeams[teamID] = true
+        end
+        self.meterDetailRosterType = sourceAssignment and sourceAssignment.t or "raider"
+        self.meterDetailPrimaryRole = sourceAssignment and sourceAssignment.p or ""
+        self.meterDetailSecondaryRole = sourceAssignment and sourceAssignment.s or ""
+        self.meterDetailRosterEditing = rosterAssignmentCount > 0
     end
 
     local title = self:TrackMeterDetail(LV.Widgets:Text(frame, row.name, "large"))
@@ -2288,58 +2939,225 @@ function LV.UI:ShowMeterPlayerDetail(guildKey, row, raidCount)
     end))
     close:SetPoint("TOPRIGHT", -12, -12)
 
-    local percent = self:MeterAttendancePercent(row, raidCount)
-    local summary = self:TrackMeterDetail(LV.Widgets:Text(frame, tostring(percent) .. "% attendance  " .. tostring(row.attended or 0) .. "/" .. tostring(raidCount) .. " attended"))
-    summary:SetTextColor(unpack(LV.Widgets.colors.muted))
-    summary:SetPoint("TOPLEFT", 22, -48)
-
     local tagLabel = self:TrackMeterDetail(LV.Widgets:Label(frame, "Tag"))
-    tagLabel:SetPoint("TOPLEFT", 24, -82)
+    tagLabel:SetPoint("TOPLEFT", 24, -58)
     local tag = self:TrackMeterDetail(LV.Widgets:Dropdown(frame, rosterTagValues, function()
         return self.meterDetailTag or "guild"
     end, function(value)
         self.meterDetailTag = value
-    end, 76))
-    tag:SetPoint("LEFT", tagLabel, "RIGHT", 12, 0)
-
-    local mainLabel = self:TrackMeterDetail(LV.Widgets:Label(frame, "Main"))
-    mainLabel:SetPoint("LEFT", tag, "RIGHT", 20, 0)
-    local mainEdit = self:TrackMeterDetail(LV.Widgets:EditBox(frame, 120, 24, function(value)
-        self.meterDetailMain = value
-    end))
-    mainEdit:SetText(self.meterDetailMain or "")
-    mainEdit:SetPoint("LEFT", mainLabel, "RIGHT", 10, 0)
-
-    local class = self:TrackMeterDetail(LV.Widgets:Dropdown(frame, classValues, function()
-        return self.meterDetailClass or ""
-    end, function(value)
-        self.meterDetailClass = value
-    end, 118))
-    class:SetPoint("LEFT", mainEdit, "RIGHT", 14, 0)
-
-    local save = self:TrackMeterDetail(LV.Widgets:Button(frame, "Save", 58, 24, function()
-        self.meterDetailMain = mainEdit:GetText()
-        if self.meterDetailClass and self.meterDetailClass ~= "" then
-            LV.Store:SetPlayerClass(guildKey, row.id, self.meterDetailClass)
+        if value ~= "alt" then
+            LV.Guild:SetRosterOverride(guildKey,
+                row.fullName or LV.Store:DictionaryValue(guildKey, "n", row.id), value, "")
+            self.meterDetailMain = ""
+            self:Refresh()
         end
-        LV.Guild:SetRosterOverride(guildKey, row.fullName or LV.Store:DictionaryValue(guildKey, "n", row.id), self.meterDetailTag or "guild", self.meterDetailMain or "")
-        self:Refresh()
-        self:RefreshMeterDetail(guildKey, row.id)
-    end))
-    save:SetPoint("LEFT", class, "RIGHT", 12, 0)
+        self:ShowPlayerDetailForName(guildKey, row.id, self.meterDetailRosterTeamID)
+    end, 210))
+    tag:SetPoint("TOPLEFT", 92, -62)
 
-    self:RenderMeterDetailAlts(frame, guildKey, row)
+    if self.meterDetailTag == "alt" then
+        local mainCandidates = self:MeterDetailMainCandidates(guildKey, row.id)
+        local mainLabel = self:TrackMeterDetail(LV.Widgets:Label(frame, "Main"))
+        mainLabel:SetPoint("TOPLEFT", 360, -58)
+        local mainSearch = self:TrackMeterDetail(LV.Widgets:SearchDropdown(frame, mainCandidates, function()
+            return self.meterDetailMain or ""
+        end, function(value)
+            self.meterDetailMain = value
+        end, 160, 6))
+        mainSearch:SetPoint("TOPLEFT", 418, -62)
 
-    self:DrawMeterDetailLegend(frame, "Here / Standby", detailStatusColors.here, 24, -166)
-    self:DrawMeterDetailLegend(frame, "Late", detailStatusColors.late, 150, -166)
-    self:DrawMeterDetailLegend(frame, "Out", detailStatusColors.out, 218, -166)
-    self:DrawMeterDetailLegend(frame, "NoShow", detailStatusColors.noshow, 280, -166)
-    self:DrawMeterDetailLegend(frame, "Not marked", detailStatusColors.empty, 380, -166)
+        local saveMain = self:TrackMeterDetail(LV.Widgets:Button(frame, "Save", 70, 28, function()
+            local wanted = LV.Util:Trim(self.meterDetailMain):lower()
+            local selectedMain
+            for _, candidate in ipairs(mainCandidates) do
+                if candidate.value:lower() == wanted or candidate.label:lower() == wanted then
+                    selectedMain = candidate.value
+                    break
+                end
+            end
+            if not selectedMain then
+                LV:Print("Search for and select this alt's main before saving.")
+                return
+            end
+            LV.Guild:SetRosterOverride(guildKey,
+                row.fullName or LV.Store:DictionaryValue(guildKey, "n", row.id), "alt", selectedMain)
+            self.meterDetailMain = LV.Util:ShortName(selectedMain)
+            self:Refresh()
+            self:ShowPlayerDetailForName(guildKey, row.id, self.meterDetailRosterTeamID)
+        end, "primary"))
+        saveMain:SetPoint("LEFT", mainSearch, "RIGHT", 8, 0)
+    end
+
+    local detectedClass = self:PlayerClassToken(guildKey, row.id)
+    local rosterHeadingY = -108
+    if LV.Util:IsBlank(detectedClass) then
+        local classLabel = self:TrackMeterDetail(LV.Widgets:Label(frame, "Class"))
+        classLabel:SetPoint("TOPLEFT", 24, -94)
+        local class = self:TrackMeterDetail(LV.Widgets:Dropdown(frame, classValues, function()
+            return self.meterDetailClass or ""
+        end, function(value)
+            self.meterDetailClass = value
+            if value ~= "" then
+                LV.Store:SetPlayerClass(guildKey, row.id, value)
+                self:ShowPlayerDetailForName(guildKey, row.id, self.meterDetailRosterTeamID)
+            end
+        end, 210))
+        class:SetPoint("TOPLEFT", 92, -98)
+        rosterHeadingY = -144
+    end
+
+    self:DrawMeterDetailHeading(frame, "Roster", rosterHeadingY)
+    local nextSectionY
+    if not self.meterDetailRosterEditing then
+        local addRoster = self:TrackMeterDetail(LV.Widgets:Button(frame, "Add to Roster", 126, 28, function()
+            if not canManageRoster then
+                return
+            end
+            self.meterDetailRosterEditing = true
+            if not next(self.meterDetailRosterTeams or {}) and preferredTeam then
+                self.meterDetailRosterTeams[preferredTeam.id] = true
+            end
+            self:ShowPlayerDetailForName(guildKey, row.id, self.meterDetailRosterTeamID)
+        end, "success"))
+        addRoster:SetPoint("TOPLEFT", 24, rosterHeadingY - 30)
+        addRoster:SetEnabled(canManageRoster and #rosterTeams > 0)
+        if #rosterTeams == 0 then
+            LV.Widgets:SetTooltip(addRoster, "Configure a raid team before adding roster players.")
+        end
+        nextSectionY = rosterHeadingY - 76
+    else
+        local rowOneY = rosterHeadingY - 34
+        local rowTwoY = rowOneY - 38
+
+        local teamsLabel = self:TrackMeterDetail(LV.Widgets:Label(frame, "Teams"))
+        teamsLabel:SetPoint("TOPLEFT", 24, rowOneY + 4)
+        local teams = self:TrackMeterDetail(LV.Widgets:MultiSelectDropdown(frame, rosterTeams, function()
+            return self.meterDetailRosterTeams or {}
+        end, function(teamID, selected)
+            self.meterDetailRosterTeams[teamID] = selected and true or nil
+        end, 210))
+        teams:SetPoint("TOPLEFT", 92, rowOneY)
+        teams:SetEnabled(canManageRoster)
+
+        local typeLabel = self:TrackMeterDetail(LV.Widgets:Label(frame, "Type"))
+        typeLabel:SetPoint("TOPLEFT", 360, rowOneY + 4)
+        local rosterType = self:TrackMeterDetail(LV.Widgets:Dropdown(frame, teamRosterTypeValues, function()
+            return self.meterDetailRosterType or "raider"
+        end, function(value)
+            self.meterDetailRosterType = value
+        end, 210))
+        rosterType:SetPoint("TOPLEFT", 438, rowOneY)
+        rosterType:SetEnabled(canManageRoster)
+
+        local primaryLabel = self:TrackMeterDetail(LV.Widgets:Label(frame, "Primary"))
+        primaryLabel:SetPoint("TOPLEFT", 24, rowTwoY + 4)
+        local primary = self:TrackMeterDetail(LV.Widgets:Dropdown(frame, teamRosterRoleValues, function()
+            return self.meterDetailPrimaryRole or ""
+        end, function(value)
+            self.meterDetailPrimaryRole = value
+            if self.meterDetailSecondaryRole == value then
+                self.meterDetailSecondaryRole = ""
+            end
+        end, 210))
+        primary:SetPoint("TOPLEFT", 92, rowTwoY)
+        primary:SetEnabled(canManageRoster)
+
+        local secondaryLabel = self:TrackMeterDetail(LV.Widgets:Label(frame, "Secondary"))
+        secondaryLabel:SetPoint("TOPLEFT", 360, rowTwoY + 4)
+        local secondary = self:TrackMeterDetail(LV.Widgets:Dropdown(frame, teamRosterSecondaryRoleValues, function()
+            return self.meterDetailSecondaryRole or ""
+        end, function(value)
+            self.meterDetailSecondaryRole = value ~= self.meterDetailPrimaryRole and value or ""
+        end, 210))
+        secondary:SetPoint("TOPLEFT", 438, rowTwoY)
+        secondary:SetEnabled(canManageRoster)
+
+        local actionY = rowTwoY - 38
+        local saveRoster = self:TrackMeterDetail(LV.Widgets:Button(frame, "Save Roster", 112, 28, function()
+            if not canManageRoster then
+                return
+            end
+            local selectedCount = 0
+            for _, option in ipairs(rosterTeams) do
+                if self.meterDetailRosterTeams[option.value] then
+                    selectedCount = selectedCount + 1
+                end
+            end
+            if selectedCount == 0 then
+                LV:Print("Select at least one team before saving the roster assignment.")
+                return
+            end
+            if LV.Util:Trim(self.meterDetailPrimaryRole) == "" then
+                LV:Print("Choose a primary role before saving the roster assignment.")
+                return
+            end
+
+            for _, option in ipairs(rosterTeams) do
+                local previous = rosterAssignments[option.value]
+                if self.meterDetailRosterTeams[option.value] then
+                    local assignment = LV.Store:SetTeamRosterPlayer(guildKey, option.value, row.id,
+                        self.meterDetailRosterType or "raider", self.meterDetailPrimaryRole,
+                        self.meterDetailSecondaryRole)
+                    if assignment and LV.RosterSync then
+                        LV.RosterSync:PublishPlayer(guildKey, option.value, row.id, assignment, false)
+                    end
+                elseif previous and LV.Store:RemoveTeamRosterPlayer(guildKey, option.value, row.id) then
+                    if LV.RosterSync then
+                        LV.RosterSync:PublishPlayer(guildKey, option.value, row.id, previous, true)
+                    end
+                end
+            end
+            LV:Print("Saved " .. tostring(row.name) .. " on " .. tostring(selectedCount) .. " team"
+                .. (selectedCount == 1 and "." or "s."))
+            self.meterDetailRosterStatePlayerID = nil
+            self:Refresh()
+            self:ShowPlayerDetailForName(guildKey, row.id, self.meterDetailRosterTeamID)
+        end, "success"))
+        saveRoster:SetPoint("TOPLEFT", 92, actionY)
+        saveRoster:SetEnabled(canManageRoster)
+
+        if rosterAssignmentCount > 0 and canManageRoster then
+            local removeRoster = self:TrackMeterDetail(LV.Widgets:Button(frame, "Remove", 90, 28, function()
+                for _, option in ipairs(rosterTeams) do
+                    local previous = rosterAssignments[option.value]
+                    if previous and LV.Store:RemoveTeamRosterPlayer(guildKey, option.value, row.id) then
+                        if LV.RosterSync then
+                            LV.RosterSync:PublishPlayer(guildKey, option.value, row.id, previous, true)
+                        end
+                    end
+                end
+                self.meterDetailRosterStatePlayerID = nil
+                self.meterDetailRosterEditing = false
+                self:Refresh()
+                self:ShowPlayerDetailForName(guildKey, row.id, self.meterDetailRosterTeamID)
+            end, "danger"))
+            removeRoster:SetPoint("LEFT", saveRoster, "RIGHT", 8, 0)
+        end
+        nextSectionY = actionY - 42
+    end
+
+    local attendanceHeadingY = self:RenderMeterDetailAlts(frame, guildKey, row, nextSectionY)
+    self:DrawMeterDetailHeading(frame, "Attendance", attendanceHeadingY)
+
+    local percent = self:MeterAttendancePercent(row, raidCount)
+    local summary = self:TrackMeterDetail(LV.Widgets:Text(frame, tostring(percent) .. "% attendance  "
+        .. tostring(row.attended or 0) .. "/" .. tostring(raidCount) .. " raids attended"))
+    summary:SetTextColor(unpack(LV.Widgets.colors.muted))
+    summary:SetPoint("TOPLEFT", 24, attendanceHeadingY - 28)
+
+    local legendY = attendanceHeadingY - 58
+    self:DrawMeterDetailLegend(frame, "Here / Standby", detailStatusColors.here, 24, legendY)
+    self:DrawMeterDetailLegend(frame, "Late", detailStatusColors.late, 150, legendY)
+    self:DrawMeterDetailLegend(frame, "Out", detailStatusColors.out, 218, legendY)
+    self:DrawMeterDetailLegend(frame, "NoShow", detailStatusColors.noshow, 280, legendY)
+    self:DrawMeterDetailLegend(frame, "Not marked", detailStatusColors.empty, 380, legendY)
 
     local nightsTitle = self:TrackMeterDetail(LV.Widgets:Label(frame, "Raid Nights - Newest First"))
-    nightsTitle:SetPoint("TOPLEFT", 24, -204)
+    local nightsTitleY = attendanceHeadingY - 94
+    nightsTitle:SetPoint("TOPLEFT", 24, nightsTitleY)
 
-    self:RenderMeterDetailGrid(frame, guildKey, row, raidCount)
+    frame:SetHeight(math.max(640, math.min(760, -nightsTitleY + 215)))
+    self:RenderMeterDetailGrid(frame, guildKey, row, raidCount, nightsTitleY)
     frame:Show()
     frame:Raise()
 end
@@ -2510,28 +3328,33 @@ function LV.UI:RenderAttendanceMeter()
 end
 
 function LV.UI:DrawProgressBar(parent, current, total, x, y, width)
-    current = tonumber(current) or 0
-    total = tonumber(total) or 1
-    if total <= 0 then
-        total = 1
-    end
-
     local bar = CreateFrame("Frame", nil, parent, "BackdropTemplate")
     bar:SetPoint("TOPLEFT", x, y)
     bar:SetSize(width or 420, 18)
     LV.Widgets:ApplyBackdrop(bar, meterColors.empty, LV.Widgets.colors.border)
+    bar.fill = bar:CreateTexture(nil, "ARTWORK")
+    bar.fill:SetColorTexture(unpack(LV.Widgets.colors.active))
+    bar.fill:SetPoint("TOPLEFT", bar, "TOPLEFT", 1, -1)
+    bar.fill:SetHeight(16)
+    bar.label = LV.Widgets:Text(bar, "")
+    bar.label:SetPoint("CENTER")
+    bar.label:SetTextColor(unpack(LV.Widgets.colors.white))
+    self:UpdateProgressBar(bar, current, total)
+    return bar
+end
 
-    local fillWidth = math.floor(((width or 420) * math.min(current, total) / total) + 0.5)
-    if fillWidth > 0 then
-        local fill = bar:CreateTexture(nil, "ARTWORK")
-        fill:SetColorTexture(unpack(LV.Widgets.colors.active))
-        fill:SetPoint("TOPLEFT", bar, "TOPLEFT", 1, -1)
-        fill:SetSize(math.max(1, fillWidth - 2), 16)
+function LV.UI:UpdateProgressBar(bar, current, total)
+    if not bar then
+        return
     end
-
-    local label = LV.Widgets:Text(bar, tostring(current) .. "/" .. tostring(total))
-    label:SetPoint("CENTER")
-    label:SetTextColor(unpack(LV.Widgets.colors.white))
+    current = math.max(0, tonumber(current) or 0)
+    total = math.max(1, tonumber(total) or 1)
+    local fillWidth = math.floor((bar:GetWidth() * math.min(current, total) / total) + 0.5)
+    bar.fill:SetShown(fillWidth > 0)
+    if fillWidth > 0 then
+        bar.fill:SetWidth(math.max(1, fillWidth - 2))
+    end
+    bar.label:SetText(tostring(current) .. "/" .. tostring(total))
 end
 
 function LV.UI:LootItemDisplay(guildKey, row)
@@ -3415,6 +4238,197 @@ function LV.UI:CreateHistoryItemButton(parent, guildKey, row, x, y, width, nativ
     return button
 end
 
+function LV.UI:ShowSyncComparison(session)
+    if not session or type(session.comparison) ~= "table" then
+        return
+    end
+    self:Ensure()
+    self.frame:Show()
+    self.currentTab = "sync"
+    self:Refresh()
+    if self.syncComparisonModal then
+        self.syncComparisonModal:Hide()
+    end
+
+    local layer = CreateFrame("Frame", nil, self.frame, "BackdropTemplate")
+    layer:SetAllPoints(self.frame)
+    layer:SetFrameStrata("FULLSCREEN_DIALOG")
+    layer:SetFrameLevel(self.frame:GetFrameLevel() + 460)
+    layer:SetToplevel(true)
+    layer:EnableMouse(true)
+    LV.Widgets:ApplyBackdrop(layer, LV.Widgets.colors.overlay, LV.Widgets.colors.transparent)
+
+    local modal = CreateFrame("Frame", nil, layer, "BackdropTemplate")
+    modal:SetSize(930, 590)
+    modal:SetPoint("CENTER")
+    modal:SetFrameLevel(layer:GetFrameLevel() + 1)
+    modal:EnableMouse(true)
+    LV.Widgets:ApplyBackdrop(modal, LV.Widgets.colors.canvasAlt, LV.Widgets.colors.borderStrong)
+
+    local targetName = LV.DataSync:GenericTarget(session)
+    local comparison = session.comparison
+    local title = LV.Widgets:Text(modal, "Raid Sync Comparison", "large")
+    title:SetPoint("TOPLEFT", 20, -18)
+    local close = LV.Widgets:Button(modal, "x", 28, 28, function() layer:Hide() end, "ghost")
+    close:SetPoint("TOPRIGHT", -14, -14)
+    local summary = LV.Widgets:Text(modal, string.format(
+        "%d available or newer from %s  |  %d of yours missing or newer remotely",
+        #(comparison.missingLocal or {}), tostring(targetName or "remote"),
+        #(comparison.missingRemote or {})))
+    summary:SetPoint("TOPLEFT", 20, -50)
+    summary:SetTextColor(unpack(LV.Widgets.colors.textSecondary))
+
+    local selectedRows = {}
+    local function listPanel(x, heading)
+        local panel = CreateFrame("Frame", nil, modal, "BackdropTemplate")
+        panel:SetPoint("TOPLEFT", x, -118)
+        panel:SetSize(435, 404)
+        LV.Widgets:ApplyBackdrop(panel, LV.Widgets.colors.canvas, LV.Widgets.colors.border)
+        local headingText = LV.Widgets:Text(panel, heading)
+        headingText:SetPoint("TOPLEFT", 12, -12)
+        headingText:SetTextColor(unpack(LV.Widgets.colors.navigation))
+        local dateHeader = LV.Widgets:Text(panel, "DATE")
+        dateHeader:SetPoint("TOPLEFT", 58, -38)
+        dateHeader:SetTextColor(unpack(LV.Widgets.colors.muted))
+        local tagHeader = LV.Widgets:Text(panel, "RAID TAG")
+        tagHeader:SetPoint("TOPLEFT", 160, -38)
+        tagHeader:SetTextColor(unpack(LV.Widgets.colors.muted))
+        local killsHeader = LV.Widgets:Text(panel, "KILLS")
+        killsHeader:SetPoint("TOPLEFT", 304, -38)
+        killsHeader:SetTextColor(unpack(LV.Widgets.colors.muted))
+        local lootHeader = LV.Widgets:Text(panel, "LOOT")
+        lootHeader:SetPoint("TOPLEFT", 350, -38)
+        lootHeader:SetTextColor(unpack(LV.Widgets.colors.muted))
+        local peopleHeader = LV.Widgets:Text(panel, "PPL")
+        peopleHeader:SetPoint("TOPLEFT", 396, -38)
+        peopleHeader:SetTextColor(unpack(LV.Widgets.colors.muted))
+        local scroll, content = LV.Widgets:ScrollFrame(panel)
+        scroll:SetPoint("TOPLEFT", 8, -60)
+        scroll:SetPoint("BOTTOMRIGHT", -8, 8)
+        return panel, scroll, content
+    end
+
+    local _, _, leftContent = listPanel(20, "AVAILABLE FROM " .. tostring(targetName or "REMOTE"):upper())
+    local _, _, rightContent = listPanel(475, "YOUR RAIDS MISSING REMOTELY")
+
+    local function raidRow(content, entry, index, selectable)
+        local row = CreateFrame("Frame", nil, content, "BackdropTemplate")
+        row:SetPoint("TOPLEFT", 0, -((index - 1) * 36))
+        row:SetPoint("TOPRIGHT", 0, -((index - 1) * 36))
+        row:SetHeight(34)
+        LV.Widgets:ApplyBackdrop(row,
+            index % 2 == 0 and LV.Widgets.colors.surface or LV.Widgets.colors.canvasAlt,
+            LV.Widgets.colors.transparent)
+        if selectable then
+            row.check = LV.Widgets:Check(row, "")
+            row.check:SetPoint("LEFT", 4, 0)
+            row.raidID = entry.id
+            selectedRows[#selectedRows + 1] = row
+        end
+        local dateText = LV.Widgets:Text(row, date("%m/%d/%y", tonumber(entry.st) or 0))
+        dateText:SetPoint("LEFT", 50, 0)
+        local tagText = LV.Widgets:Text(row, tostring(entry.teamName or entry.team or "Main"))
+        tagText:SetPoint("LEFT", 152, 0)
+        tagText:SetWidth(136)
+        tagText:SetWordWrap(false)
+        local killsText = LV.Widgets:Text(row, tostring(entry.kills or 0))
+        killsText:SetPoint("LEFT", 300, 0)
+        local lootText = LV.Widgets:Text(row, tostring(entry.loot or 0))
+        lootText:SetPoint("LEFT", 348, 0)
+        local peopleText = LV.Widgets:Text(row, tostring(entry.people or 0))
+        peopleText:SetPoint("LEFT", 396, 0)
+        return row
+    end
+
+    local leftRows = comparison.missingLocal or {}
+    if #leftRows == 0 then
+        local empty = LV.Widgets:Text(leftContent, "No missing raids available from this player.")
+        empty:SetPoint("TOPLEFT", 12, -12)
+        empty:SetTextColor(unpack(LV.Widgets.colors.muted))
+    else
+        for index, entry in ipairs(leftRows) do
+            raidRow(leftContent, entry, index, true)
+        end
+    end
+    leftContent:SetHeight(math.max(330, math.max(1, #leftRows) * 36))
+
+    local rightRows = comparison.missingRemote or {}
+    if #rightRows == 0 then
+        local empty = LV.Widgets:Text(rightContent, "They already have all of your listed raids.")
+        empty:SetPoint("TOPLEFT", 12, -12)
+        empty:SetTextColor(unpack(LV.Widgets.colors.muted))
+    else
+        for index, entry in ipairs(rightRows) do
+            raidRow(rightContent, entry, index, false)
+        end
+    end
+    rightContent:SetHeight(math.max(330, math.max(1, #rightRows) * 36))
+
+    local selectAll = LV.Widgets:Button(modal, "Select All", 92, 28, function()
+        for _, row in ipairs(selectedRows) do
+            row.check:SetChecked(true)
+        end
+    end)
+    selectAll:SetPoint("TOPLEFT", 20, -82)
+    local selectNone = LV.Widgets:Button(modal, "Select None", 92, 28, function()
+        for _, row in ipairs(selectedRows) do
+            row.check:SetChecked(false)
+        end
+    end)
+    selectNone:SetPoint("LEFT", selectAll, "RIGHT", 8, 0)
+    local status = LV.Widgets:Text(modal, session.status or "Select the raids you want to import.")
+    status:SetPoint("TOPLEFT", 20, -530)
+    status:SetWidth(740)
+    status:SetWordWrap(false)
+    status:SetTextColor(unpack(LV.Widgets.colors.textSecondary))
+    local current, total = LV.DataSync:ProgressForSession(session)
+    local progress = self:DrawProgressBar(modal, current, total, 20, -554, 740)
+    local sync
+    sync = LV.Widgets:Button(modal, "Sync Selected", 128, 30, function()
+        local selected = {}
+        for _, row in ipairs(selectedRows) do
+            if row.check:GetChecked() then
+                selected[row.raidID] = true
+            end
+        end
+        local ok, result = LV.DataSync:RequestSelected(session, selected)
+        if ok then
+            status:SetText("Requesting " .. tostring(result) .. " selected raid(s)...")
+            sync:SetEnabled(false)
+        else
+            status:SetText(tostring(result or "Unable to request selected raids."))
+        end
+    end, "primary")
+    sync:SetPoint("BOTTOMRIGHT", -20, 16)
+    sync:SetEnabled(#leftRows > 0)
+
+    layer.session = session
+    layer.modal = modal
+    modal.status = status
+    modal.progress = progress
+    modal.syncButton = sync
+    modal.selectableCount = #leftRows
+    self.syncComparisonModal = layer
+    layer:Show()
+    layer:Raise()
+    self:RefreshSyncComparisonProgress()
+end
+
+function LV.UI:RefreshSyncComparisonProgress()
+    local layer = self.syncComparisonModal
+    local modal = layer and layer.modal
+    local session = layer and layer.session
+    if not layer or not layer:IsShown() or not modal or not session then
+        return
+    end
+    local current, total, status = LV.DataSync:ProgressForSession(session)
+    modal.status:SetText(status ~= "" and status or "Select the raids you want to import.")
+    self:UpdateProgressBar(modal.progress, current, total)
+    local busy = session.genericCurrent ~= nil or session.genericReceiving ~= nil
+        or session.requestPending == true
+    modal.syncButton:SetEnabled((modal.selectableCount or 0) > 0 and not busy)
+end
+
 function LV.UI:RenderDataSync()
     local guildInfo = self:CurrentGuildOrMessage()
     if not guildInfo then
@@ -3423,7 +4437,7 @@ function LV.UI:RenderDataSync()
 
     self:SetPageHeader("Data Sync", pageDefinitions.sync.hint, guildInfo)
 
-    local panel = LV.Widgets:Section(self.content, "Two-Way Guild Merge", 216)
+    local panel = LV.Widgets:Section(self.content, "Selective Guild Sync", 224)
     panel:SetPoint("TOPLEFT", 22, -102)
     panel:SetPoint("RIGHT", -22, 0)
 
@@ -3436,23 +4450,27 @@ function LV.UI:RenderDataSync()
     target:SetText(self.syncTarget or "")
     target:SetPoint("LEFT", targetLabel, "RIGHT", 16, 0)
 
-    local send = LV.Widgets:Button(panel, "Invite Sync", 96, 26, function()
+    local send = LV.Widgets:Button(panel, "Compare Raids", 110, 26, function()
         self.syncTarget = target:GetText()
         LV.DataSync:StartSync(self.syncTarget)
     end, "primary")
     send:SetPoint("LEFT", target, "RIGHT", 12, 0)
 
-    local hint = LV.Widgets:Text(panel, "Merges both players' attendance, loot, trades, and excluded-item rules from the last 2 months. Your shared guild config is used.")
+    local hint = LV.Widgets:Text(panel, "Exchanges a small two-month raid list first. Each player chooses which missing raids to import; only selected attendance, kills, loot, and trades are transferred.")
     hint:SetTextColor(unpack(LV.Widgets.colors.muted))
     hint:SetPoint("TOPLEFT", 24, -88)
+    hint:SetPoint("TOPRIGHT", panel, "TOPRIGHT", -24, -88)
+    hint:SetHeight(34)
+    hint:SetJustifyH("LEFT")
+    hint:SetWordWrap(true)
 
     local current, total, status = LV.DataSync:Progress()
     local statusText = LV.Widgets:Text(panel, status)
-    statusText:SetPoint("TOPLEFT", 24, -124)
+    statusText:SetPoint("TOPLEFT", 24, -132)
     statusText:SetWidth(620)
     statusText:SetWordWrap(false)
 
-    self:DrawProgressBar(panel, current, total, 24, -154, 620)
+    self:DrawProgressBar(panel, current, total, 24, -162, 620)
 
     local inbound = LV.DataSync.inbound
     local outbound = LV.DataSync.outbound
@@ -3465,7 +4483,9 @@ function LV.UI:RenderDataSync()
         local text = LV.Widgets:Text(detail, "Sync with " .. tostring(outbound.target or "") .. " - " .. tostring(outbound.state or ""))
         text:SetPoint("TOPLEFT", 24, y)
         y = y - 28
-        local counts = LV.Widgets:Text(detail, LV.DataSync:FormatCounts(outbound.counts))
+        local countText = outbound.counts and LV.DataSync:FormatCounts(outbound.counts)
+            or tostring(outbound.manifestCount or 0) .. " raid summaries available"
+        local counts = LV.Widgets:Text(detail, countText)
         counts:SetTextColor(unpack(LV.Widgets.colors.muted))
         counts:SetPoint("TOPLEFT", 24, y)
         y = y - 28

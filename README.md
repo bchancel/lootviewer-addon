@@ -9,6 +9,7 @@ Retail targets: WoW `12.1.0` and `12.0.7` / interfaces `120100, 120007`.
 - Tracks raid sessions, encounter attendance snapshots, standby credit, and late flags.
 - Captures loot and follow-up trades while preserving stable event identities.
 - Supports separate raid teams and visual 30-minute start/end schedules within one guild, with per-team portable time zones, optional 24-hour labels, and local-only sync exclusion.
+- Adds authority-managed per-team rosters with Raider, Trial, and Helper types plus class and combat roles, live group, loaded guild, raid-history, and manual Name-Realm search, automatic roster distribution, and automatic no-shows for missing Raiders and Trials.
 - Includes a reserved account-wide Pugs team in every raid-team selector; it has a fixed `#C5C6C7` color, no schedule or configuration, and never syncs.
 - Allows any player to start Pugs tracking regardless of guild authority, with an optional account-wide auto-start for current-tier pug raids outside configured raid hours.
 - Allows guild officers to publish a `LootViewer Authority:` directive in Guild Information that locks the effective Lead/Assist, Raid Lead, Anyone, or Trusted rank policy without replacing members' local fallback settings.
@@ -23,7 +24,7 @@ Retail targets: WoW `12.1.0` and `12.0.7` / interfaces `120100, 120007`.
 - Provides `/lv` configuration, attendance, and history views.
 - Adds season-owned tier-token catalogs and a Tier history grouped by token type, slot, and raid difficulty; seasons without a catalog report that no tier tokens are defined.
 - Supports a session-only `/lv guild_set <guild>` override for viewing stored guild data from unguilded alts.
-- Synchronizes records between participating guild members through addon messages.
+- Compares compact raid manifests between guild members, then reliably transfers only the missing raids each player selects.
 - Optionally records Midnight Season 2 Mythic+ end-of-run gear, Mythic 0 boss gear, and bonus-roll loot with the active loot specialization.
 - Shows raid and dungeon loot distribution as clickable Normal/Heroic/Mythic or Champion/Hero/Myth stacked meters using the final owner after trades.
 - Filters dungeon distribution by minimum Champion/Heroic/Bonus Roll track and by any individual dungeon in the selected season.

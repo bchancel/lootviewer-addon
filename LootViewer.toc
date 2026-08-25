@@ -2,7 +2,7 @@
 ## Title: LootViewer
 ## Notes: Guild-scoped raid attendance, loot, and trade tracking for LootViewer.
 ## Author: LootViewer
-## Version: 12.1.5
+## Version: 12.1.6
 ## X-Curse-Project-ID: 1635786
 ## SavedVariables: LootViewerDB
 
@@ -15,6 +15,7 @@ Core/Store.lua
 Core/OptionsLoader.lua
 Core/Guild.lua
 Core/Comms.lua
+Core/RosterSync.lua
 Core/DataSync.lua
 Events/Raid.lua
 Events/Loot.lua

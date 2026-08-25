@@ -84,6 +84,8 @@ function LV.Comms:HandleMessage(prefix, message, channel, sender)
         LV.Raid:ObserveLoggerProbe(parts, sender)
     elseif kind == "T" and LV.Trade then
         LV.Trade:ObserveRemoteTrade(parts, sender)
+    elseif LV.RosterSync and LV.RosterSync:IsRosterKind(kind) then
+        LV.RosterSync:HandleMessage(parts, sender, channel)
     elseif LV.DataSync and LV.DataSync:IsSyncKind(kind) then
         LV.DataSync:HandleMessage(parts, sender)
     end

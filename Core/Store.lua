@@ -11,6 +11,8 @@ local function ensureTable(parent, key)
 end
 
 local DEFAULT_TEAM_COLOR = { r = 0.1725, g = 0.5569, b = 0.8275, a = 0.8 }
+local TEAM_ROSTER_TYPES = { raider = true, trial = true, helper = true }
+local TEAM_ROSTER_ROLES = { tank = true, healer = true, melee = true, ranged = true }
 local GLOBAL_PUG_TEAM = {
     id = "pugs",
     name = "Pugs",
@@ -38,6 +40,29 @@ end
 local function snapScheduleMinute(value, maximum)
     value = math.floor(((tonumber(value) or 0) + 15) / 30) * 30
     return math.max(0, math.min(maximum or 1440, value))
+end
+
+function LV.Store:NormalizeHistoricalRaidTimes(record)
+    if type(record) ~= "table" then
+        return 0
+    end
+
+    local repaired = 0
+    local graceSeconds = ((record.cfg and tonumber(record.cfg.endGrace)) or 0) * 60
+    for _, raid in pairs(record.r or {}) do
+        if type(raid) == "table" and raid.lastSource == "ui_edit" then
+            local endedAt = tonumber(raid.en)
+            local scheduledEndAt = tonumber(raid.set)
+            if endedAt and scheduledEndAt then
+                local maximumEndAt = scheduledEndAt + graceSeconds
+                if endedAt > maximumEndAt then
+                    raid.en = maximumEndAt
+                    repaired = repaired + 1
+                end
+            end
+        end
+    end
+    return repaired
 end
 
 function LV.Store:Initialize()
@@ -182,6 +207,7 @@ function LV.Store:GuildRecord(guildKey)
     record.next.loot = tonumber(record.next.loot) or 1
     record.next.trade = tonumber(record.next.trade) or 1
     self:NormalizeTeams(record)
+    self:NormalizeHistoricalRaidTimes(record)
 
     self:EnsureReverseMaps(guildKey, record)
     return record
@@ -293,6 +319,32 @@ function LV.Store:NormalizeTeams(record)
         end
         team.excludeSync = team.excludeSync == true or tonumber(team.excludeSync) == 1
         team.color = self:NormalizeTeamColor(team.color)
+        local roster = type(team.ro) == "table" and team.ro or {}
+        local normalizedRoster = {}
+        for rawNameID, assignment in pairs(roster) do
+            local nameID = tonumber(rawNameID)
+            if nameID and type(record.d) == "table" and type(record.d.n) == "table"
+                and LV.Util:Trim(record.d.n[nameID]) ~= "" then
+                assignment = type(assignment) == "table" and assignment or {}
+                local primary = tostring(assignment.p or ""):lower()
+                local secondary = tostring(assignment.s or ""):lower()
+                local rosterType = tostring(assignment.t or ""):lower()
+                if primary == "helper" then
+                    rosterType = "helper"
+                    primary = TEAM_ROSTER_ROLES[secondary] and secondary or ""
+                    secondary = ""
+                end
+                assignment.t = TEAM_ROSTER_TYPES[rosterType] and rosterType or "raider"
+                assignment.p = TEAM_ROSTER_ROLES[primary] and primary or nil
+                assignment.s = TEAM_ROSTER_ROLES[secondary] and secondary ~= assignment.p and secondary or nil
+                normalizedRoster[nameID] = assignment
+            end
+        end
+        wipe(roster)
+        for nameID, assignment in pairs(normalizedRoster) do
+            roster[nameID] = assignment
+        end
+        team.ro = roster
     end
 
     if type(cfg.schedules) == "table" and #cfg.schedules > 0 and not cfg._teamsMigrated then
@@ -306,6 +358,55 @@ function LV.Store:NormalizeTeams(record)
     if not self:GetTeamByID(record, cfg.selectedTeam) then
         cfg.selectedTeam = cfg.teams[1].id
     end
+end
+
+function LV.Store:TeamRoster(guildKey, teamID)
+    local record = self:GuildRecord(guildKey)
+    local team = record and self:GetTeamByID(record, teamID)
+    if not team or self:IsGlobalPugTeam(team) then
+        return nil
+    end
+    team.ro = type(team.ro) == "table" and team.ro or {}
+    return team.ro, team
+end
+
+function LV.Store:SetTeamRosterPlayer(guildKey, teamID, nameID, rosterType, primaryRole, secondaryRole)
+    local roster = self:TeamRoster(guildKey, teamID)
+    nameID = tonumber(nameID)
+    if not roster or not nameID or self:DictionaryValue(guildKey, "n", nameID) == "" then
+        return nil
+    end
+    rosterType = tostring(rosterType or "raider"):lower()
+    primaryRole = tostring(primaryRole or ""):lower()
+    secondaryRole = tostring(secondaryRole or ""):lower()
+    if not TEAM_ROSTER_TYPES[rosterType] then
+        rosterType = "raider"
+    end
+    if not TEAM_ROSTER_ROLES[primaryRole] then
+        primaryRole = nil
+    end
+    if not TEAM_ROSTER_ROLES[secondaryRole] or secondaryRole == primaryRole then
+        secondaryRole = nil
+    end
+    local assignment = roster[nameID]
+    if type(assignment) ~= "table" then
+        assignment = {}
+        roster[nameID] = assignment
+    end
+    assignment.t = rosterType
+    assignment.p = primaryRole
+    assignment.s = secondaryRole
+    return assignment
+end
+
+function LV.Store:RemoveTeamRosterPlayer(guildKey, teamID, nameID)
+    local roster = self:TeamRoster(guildKey, teamID)
+    nameID = tonumber(nameID)
+    if not roster or not nameID or roster[nameID] == nil then
+        return false
+    end
+    roster[nameID] = nil
+    return true
 end
 
 function LV.Store:GetTeamByID(recordOrCfg, teamID)

@@ -339,6 +339,10 @@ function LV.GuildOverlay:UpdateVisibility()
 
     local session, _, guildKey = LV.Raid:GetActiveSession()
     guildKey = guildKey or LV.Guild:CurrentKey()
+    if not session or not guildKey then
+        self:Hide()
+        return
+    end
 
     local detail = self:DetailFrame()
     local fullName = self:SelectedGuildName()
@@ -360,16 +364,9 @@ function LV.GuildOverlay:UpdateVisibility()
     self.frame:SetFrameLevel(frameLevel(detail) + 20)
     self.frame.label:SetText("LootViewer: " .. shortName .. " - " .. self:AttendanceStatus(session, guildKey, fullName))
     self.frame.label:SetWidth(math.max(180, frameWidth(detail) - 24))
-    if session and guildKey then
-        self.frame:SetHeight(74)
-        for _, button in ipairs(self.frame.buttons or {}) do
-            button:Show()
-        end
-    else
-        self.frame:SetHeight(34)
-        for _, button in ipairs(self.frame.buttons or {}) do
-            button:Hide()
-        end
+    self.frame:SetHeight(74)
+    for _, button in ipairs(self.frame.buttons or {}) do
+        button:Show()
     end
     self.frame:Show()
 end

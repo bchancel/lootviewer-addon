@@ -574,7 +574,7 @@ function UI:RenderGeneralOptions(guildInfo)
         rankMax = tonumber(cfg.rankMax) or 3,
     }
 
-    local tracking = sectionGrid(self.content, "Raid Tracking", -232, {
+    local trackingRows = {
         {
             function(parent, x, y, width)
                 checkCell(parent, x, y, width, "Prompt for Scheduled Raids", cfg.prompt, function(value) cfg.prompt = value end)
@@ -668,12 +668,28 @@ function UI:RenderGeneralOptions(guildInfo)
                     if account.autoPugRaids and LV.Raid and LV.Raid.MaybeAutoStartPug then
                         LV.Raid:MaybeAutoStartPug()
                     end
-                end, "Account-wide. Automatically starts a local Pugs raid after entering current-tier raid content outside every configured raid team's scheduled hours. Raid Finder is ignored.")
+                    self:Refresh()
+                end, "Account-wide. Automatically starts a local Pugs raid after entering current-tier raid content outside every configured raid team's scheduled hours.")
             end,
         },
-    })
+    }
+    if account.autoPugRaids then
+        trackingRows[#trackingRows + 1] = {
+            function() end,
+            function(parent, x, y, width)
+                checkCell(parent, x, y, width, "Include LFR", account.autoPugIncludeLFR, function(value)
+                    account.autoPugIncludeLFR = value and true or false
+                    if account.autoPugIncludeLFR and LV.Raid and LV.Raid.MaybeAutoStartPug then
+                        LV.Raid:MaybeAutoStartPug()
+                    end
+                end, "Account-wide. Includes Raid Finder and the equivalent World tier in automatic Pugs tracking.")
+            end,
+        }
+    end
+    sectionGrid(self.content, "Raid Tracking", -232, trackingRows)
 
-    sectionGrid(self.content, "Timing & Data", -432, {
+    local timingSectionY = account.autoPugRaids and -482 or -432
+    sectionGrid(self.content, "Timing & Data", timingSectionY, {
         {
             function(parent, x, y, width)
                 dropdownCell(parent, x, y, width, "Late Grace", graceMinuteValues,

@@ -14,8 +14,8 @@ if (-not $SkipVerify) {
 }
 
 $tocText = Get-Content -LiteralPath $tocPath -Raw
-if ($tocText -notmatch '(?m)^## Version:\s*(\d+\.\d+\.\d+)\s*$') {
-    throw "LootViewer.toc does not contain a semantic ## Version value."
+if ($tocText -notmatch '(?m)^## Version:\s*(\d+\.\d+\.\d+(?:-\d+)?)\s*$') {
+    throw "LootViewer.toc does not contain a semantic ## Version value with an optional numeric prerelease suffix."
 }
 $version = $Matches[1]
 

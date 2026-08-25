@@ -582,3 +582,149 @@ function LV.Widgets:Dropdown(parent, values, getValue, setValue, width, maxVisib
     refresh()
     return button
 end
+
+function LV.Widgets:MultiSelectDropdown(parent, values, getSelected, setSelected, width)
+    values = values or {}
+    local button = self:Button(parent, "", width or 180, 28)
+    button.text:ClearAllPoints()
+    button.text:SetPoint("LEFT", 10, 0)
+    button.text:SetPoint("RIGHT", -24, 0)
+    button.text:SetJustifyH("LEFT")
+    button.text:SetWordWrap(false)
+    button.arrow = self:Label(button, "v")
+    button.arrow:SetPoint("RIGHT", -8, 1)
+    button.arrow:SetTextColor(unpack(colors.accentBright))
+
+    button.menu = CreateFrame("Frame", nil, button, "BackdropTemplate")
+    button.menu:SetPoint("TOPLEFT", button, "BOTTOMLEFT", 0, -2)
+    button.menu:SetWidth(width or 180)
+    button.menu:SetHeight(math.max(1, #values) * 24)
+    button.menu:SetFrameStrata("TOOLTIP")
+    button.menu:SetFrameLevel(button:GetFrameLevel() + 50)
+    button.menu:Hide()
+    self:ApplyBackdrop(button.menu, colors.canvasAlt, colors.borderStrong)
+
+    local rows = {}
+    local function refresh()
+        local selected = getSelected() or {}
+        local labels = {}
+        for index, item in ipairs(values) do
+            local checked = selected[item.value] == true
+            if checked then
+                labels[#labels + 1] = item.label
+            end
+            if rows[index] and rows[index].text then
+                rows[index].text:SetText((checked and "[x] " or "[ ] ") .. item.label)
+                rows[index].text:SetTextColor(unpack(checked and colors.text or colors.textMuted))
+            end
+        end
+        button.text:SetText(#labels > 0 and table.concat(labels, ", ") or "Select teams")
+    end
+    button.Refresh = refresh
+
+    for index, item in ipairs(values) do
+        local itemValue = item.value
+        local row = self:Button(button.menu, item.label, width or 180, 24, function()
+            local selected = getSelected() or {}
+            setSelected(itemValue, selected[itemValue] ~= true)
+            refresh()
+        end, "ghost")
+        row:SetPoint("TOPLEFT", 0, -((index - 1) * 24))
+        row:SetPoint("RIGHT", 0, 0)
+        rows[index] = row
+    end
+
+    button:SetScript("OnClick", function()
+        if button.menu:IsShown() then
+            button.menu:Hide()
+        else
+            refresh()
+            button.menu:Show()
+            button.menu:Raise()
+        end
+    end)
+    button:SetScript("OnHide", function()
+        button.menu:Hide()
+    end)
+    refresh()
+    return button
+end
+
+function LV.Widgets:SearchDropdown(parent, values, getValue, setValue, width, maxVisible)
+    values = values or {}
+    maxVisible = math.max(1, math.floor(tonumber(maxVisible) or 6))
+    local edit = self:EditBox(parent, width or 180, 28)
+    local menu = CreateFrame("Frame", nil, edit, "BackdropTemplate")
+    menu:SetPoint("TOPLEFT", edit, "BOTTOMLEFT", 0, -2)
+    menu:SetWidth(width or 180)
+    menu:SetFrameStrata("TOOLTIP")
+    menu:SetFrameLevel(edit:GetFrameLevel() + 50)
+    menu:Hide()
+    self:ApplyBackdrop(menu, colors.canvasAlt, colors.borderStrong)
+
+    local rows = {}
+    local function hideMenu()
+        menu:Hide()
+    end
+    local function refreshMatches()
+        local query = LV.Util:Trim(edit:GetText()):lower()
+        local matches = {}
+        for _, item in ipairs(values) do
+            local label = tostring(item.label or "")
+            local value = tostring(item.value or "")
+            if query == "" or label:lower():find(query, 1, true) or value:lower():find(query, 1, true) then
+                matches[#matches + 1] = item
+                if #matches >= maxVisible then
+                    break
+                end
+            end
+        end
+
+        for index, row in ipairs(rows) do
+            local item = matches[index]
+            row._lvItem = item
+            row:SetShown(item ~= nil)
+            if item then
+                row.text:SetText(item.label)
+            end
+        end
+        menu:SetHeight(math.max(1, #matches) * 24)
+        menu:SetShown(#matches > 0 and edit:HasFocus())
+        if menu:IsShown() then
+            menu:Raise()
+        end
+    end
+
+    for index = 1, maxVisible do
+        local row = self:Button(menu, "", width or 180, 24, function(clicked)
+            local item = clicked._lvItem
+            if not item then
+                return
+            end
+            edit:SetText(item.label)
+            setValue(item.value, item)
+            edit:ClearFocus()
+            hideMenu()
+        end, "ghost")
+        row:SetPoint("TOPLEFT", 0, -((index - 1) * 24))
+        row:SetPoint("RIGHT", 0, 0)
+        rows[index] = row
+    end
+
+    edit:SetScript("OnTextChanged", function(self)
+        setValue(self:GetText(), nil)
+        refreshMatches()
+    end)
+    edit:HookScript("OnEditFocusGained", refreshMatches)
+    edit:HookScript("OnEditFocusLost", function()
+        if C_Timer and C_Timer.After then
+            C_Timer.After(0, hideMenu)
+        else
+            hideMenu()
+        end
+    end)
+    edit:HookScript("OnHide", hideMenu)
+    edit:SetText(getValue() or "")
+    edit.menu = menu
+    return edit
+end
