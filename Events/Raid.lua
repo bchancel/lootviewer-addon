@@ -113,6 +113,141 @@ function LV.Raid:EnsureAttendanceMaps(session)
     session.noshow = session.noshow or {}
 end
 
+function LV.Raid:AttendanceIdentityID(guildKey, nameID)
+    nameID = tonumber(nameID)
+    if not nameID then
+        return nil
+    end
+    local tag, mainID = LV.Guild:InferRosterTag(guildKey, nameID)
+    if tag == "alt" and tonumber(mainID) then
+        return tonumber(mainID)
+    end
+    return nameID
+end
+
+function LV.Raid:LinkedPlayerWasOnTime(guildKey, session, nameID)
+    local identityID = self:AttendanceIdentityID(guildKey, nameID)
+    if not identityID or type(session) ~= "table" then
+        return false
+    end
+    self:EnsureAttendanceMaps(session)
+    for actorID in pairs(session.p) do
+        actorID = tonumber(actorID)
+        if actorID and actorID ~= tonumber(nameID)
+            and self:AttendanceIdentityID(guildKey, actorID) == identityID
+            and not session.late[actorID]
+            and not session.out[actorID]
+            and not session.noshow[actorID] then
+            return true
+        end
+    end
+    return false
+end
+
+local function reconcileKillActors(guildKey, session, kill, field, allowed)
+    local list = type(kill) == "table" and kill[field]
+    if type(list) ~= "table" then
+        return 0
+    end
+
+    local chosen = {}
+    local killTime = tonumber(kill.ts) or math.huge
+    for _, rawActorID in ipairs(list) do
+        local actorID = tonumber(rawActorID)
+        if actorID and (not allowed or allowed[actorID]) then
+            local identityID = LV.Raid:AttendanceIdentityID(guildKey, actorID) or actorID
+            local joinedAt = tonumber((session.p or {})[actorID]) or 0
+            local current = chosen[identityID]
+            if joinedAt <= killTime and (not current or joinedAt > current.joinedAt
+                or (joinedAt == current.joinedAt and actorID == identityID)) then
+                chosen[identityID] = { actorID = actorID, joinedAt = joinedAt }
+            end
+        end
+    end
+
+    local values = {}
+    local emitted = {}
+    for _, rawActorID in ipairs(list) do
+        local actorID = tonumber(rawActorID)
+        local identityID = actorID and (LV.Raid:AttendanceIdentityID(guildKey, actorID) or actorID)
+        local choice = identityID and chosen[identityID]
+        if choice and choice.actorID == actorID and not emitted[identityID] then
+            values[#values + 1] = actorID
+            emitted[identityID] = true
+        end
+    end
+
+    local changed = #values ~= #list
+    if not changed then
+        for index, actorID in ipairs(values) do
+            if tonumber(list[index]) ~= actorID then
+                changed = true
+                break
+            end
+        end
+    end
+    if changed then
+        wipe(list)
+        for _, actorID in ipairs(values) do
+            list[#list + 1] = actorID
+        end
+        return 1
+    end
+    return 0
+end
+
+function LV.Raid:ReconcileLinkedAttendance(guildKey, session)
+    if not guildKey or type(session) ~= "table" then
+        return 0
+    end
+    self:EnsureAttendanceMaps(session)
+
+    local onTimeIdentities = {}
+    for actorID in pairs(session.p) do
+        actorID = tonumber(actorID)
+        if actorID and not session.late[actorID] and not session.out[actorID] and not session.noshow[actorID] then
+            local identityID = self:AttendanceIdentityID(guildKey, actorID)
+            if identityID then
+                onTimeIdentities[identityID] = true
+            end
+        end
+    end
+
+    local changed = 0
+    for rawActorID in pairs(session.late) do
+        local actorID = tonumber(rawActorID)
+        local identityID = actorID and self:AttendanceIdentityID(guildKey, actorID)
+        if identityID and onTimeIdentities[identityID] then
+            session.late[rawActorID] = nil
+            changed = changed + 1
+        end
+    end
+
+    for _, kill in ipairs(session.kills or {}) do
+        changed = changed + reconcileKillActors(guildKey, session, kill, "p")
+        changed = changed + reconcileKillActors(guildKey, session, kill, "late", session.late)
+    end
+    return changed
+end
+
+function LV.Raid:ReconcileGuildLinkedAttendance(guildKey)
+    local record = guildKey and LV.Store:GuildRecord(guildKey)
+    local changed = 0
+    for _, session in pairs((record and record.r) or {}) do
+        changed = changed + self:ReconcileLinkedAttendance(guildKey, session)
+    end
+    return changed
+end
+
+function LV.Raid:ReconcileAllLinkedAttendance()
+    LV.Store:InitializeIfNeeded()
+    local changed = 0
+    for guildKey in pairs((LV.Store.db and LV.Store.db.g) or {}) do
+        changed = changed + self:ReconcileGuildLinkedAttendance(guildKey)
+    end
+    return changed
+end
+
 function LV.Raid:FindActiveSchedule(cfg, now, teamID)
     if not cfg or type(cfg.teams) ~= "table" then
         return nil
@@ -752,7 +887,8 @@ function LV.Raid:ApplyTeamRosterNoShows(guildKey, record, session)
     for rawNameID, assignment in pairs(roster) do
         local nameID = tonumber(rawNameID)
         local rosterType = type(assignment) == "table" and assignment.t or "raider"
-        if nameID and rosterType ~= "helper" and not self:RosterPlayerAttended(guildKey, session, nameID) then
+        if nameID and rosterType ~= "helper" and rosterType ~= "social"
+            and not self:RosterPlayerAttended(guildKey, session, nameID) then
             session.noshow[nameID] = timestamp
             changed = changed + 1
         end
@@ -1024,6 +1160,10 @@ function LV.Raid:MaybePromptLate(fullName, nameID)
     if not session or session.b[nameID] or session.late[nameID] or session.out[nameID] or session.noshow[nameID] then
         return
     end
+    local guildKey = LV.Guild:CurrentKey()
+    if guildKey and self:LinkedPlayerWasOnTime(guildKey, session, nameID) then
+        return
+    end
 
     local cfg = LV.Guild:CurrentConfig()
     local grace = ((cfg and tonumber(cfg.lateGrace)) or 10) * 60
@@ -1129,15 +1269,30 @@ function LV.Raid:RecordBossKill(encounterID, encounterName, difficultyID, groupS
     end
 
     self:RecordRaidRoster("boss")
+    local present = {}
+    self:ForEachRaidMember(function(fullName, unit)
+        if type(UnitIsConnected) ~= "function" or UnitIsConnected(unit or "") then
+            local nameID = LV.Store:NameID(guildKey, fullName)
+            if nameID and not session.b[nameID] and not session.out[nameID] and not session.noshow[nameID] then
+                present[nameID] = true
+            end
+        end
+    end)
+    local late = {}
+    for nameID in pairs(present) do
+        if session.late[nameID] then
+            late[nameID] = true
+        end
+    end
     local kill = {
         ts = LV.Util:Now(),
         e = tonumber(encounterID) or 0,
         b = LV.Store:StringID(guildKey, encounterName),
         d = tonumber(difficultyID) or 0,
         n = tonumber(groupSize) or 0,
-        p = listKeys(session.p),
+        p = listKeys(present),
         bench = listKeys(session.b),
-        late = listKeys(session.late),
+        late = listKeys(late),
         out = listKeys(session.out),
         noshow = listKeys(session.noshow),
     }
@@ -1212,6 +1367,13 @@ LV:RegisterEvent("PLAYER_ENTERING_WORLD", function()
         LV.Raid:MaybeAutoStartPug()
         LV.Raid:RecordRaidRoster("enter_world")
     end)
+end)
+
+LV:RegisterEvent("PLAYER_LOGIN", function()
+    local repaired = LV.Raid:ReconcileAllLinkedAttendance()
+    if repaired > 0 then
+        LV:Print("Reconciled " .. tostring(repaired) .. " linked-character attendance entries.")
+    end
 end)
 
 LV:RegisterEvent("ZONE_CHANGED_NEW_AREA", function()

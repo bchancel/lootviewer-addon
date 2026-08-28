@@ -297,10 +297,16 @@ if ($storeText -notmatch 'function LV\.Store:TeamRoster' -or
     $storeText -notmatch 'function LV\.Store:SetTeamRosterPlayer' -or
     $storeText -notmatch 'TEAM_ROSTER_TYPES' -or
     $raidText -notmatch 'function LV\.Raid:ApplyTeamRosterNoShows' -or
+    $raidText -notmatch 'function LV\.Raid:ReconcileLinkedAttendance' -or
+    $raidText -notmatch 'function LV\.Raid:LinkedPlayerWasOnTime' -or
+    $raidText -notmatch 'UnitIsConnected' -or
     $raidText -notmatch 'rosterType\s*~=\s*"helper"' -or
     $uiText -notmatch 'function LV\.UI:RenderTeamRoster' -or
     $uiText -notmatch 'function LV\.UI:TeamRosterCandidates' -or
     $uiText -notmatch 'function LV\.UI:LiveTeamRosterCandidates' -or
+    $uiText -notmatch 'function LV\.UI:ResolvePlayerNameForGuild' -or
+    $uiText -notmatch 'LV\.Widgets:SearchDropdown\(parent, playerValues' -or
+    $uiText -notmatch 'candidate\.fullName.*source' -or
     $uiText -notmatch 'function LV\.UI:TeamRosterAccess' -or
     $uiText -notmatch 'full Name-Realm' -or
     $uiText -notmatch 'teamRosterTypeValues' -or
@@ -310,11 +316,18 @@ if ($storeText -notmatch 'function LV\.Store:TeamRoster' -or
     $uiText -notmatch 'LV\.Util:IsBlank\(detectedClass\)' -or
     $widgetsText -notmatch 'function LV\.Widgets:MultiSelectDropdown' -or
     $widgetsText -notmatch 'function LV\.Widgets:SearchDropdown' -or
+    $widgetsText -notmatch 'function selectSearchItem' -or
+    $widgetsText -notmatch 'HookScript\("OnMouseDown"' -or
     $uiText -notmatch 'teamRosterRoleOrder' -or
     $rosterSyncText -notmatch 'function LV\.RosterSync:RequestLatest' -or
     $rosterSyncText -notmatch 'function LV\.RosterSync:SendSnapshot' -or
     $rosterSyncText -notmatch 'function LV\.RosterSync:PublishPlayer' -or
     $rosterSyncText -notmatch 'function LV\.RosterSync:ApplySnapshot' -or
+    $rosterSyncText -notmatch 'function LV\.RosterSync:ResolveSnapshotElection' -or
+    $rosterSyncText -notmatch 'function LV\.RosterSync:ConsiderSnapshotCandidate' -or
+    $rosterSyncText -notmatch 'left\.revision > right\.revision' -or
+    $rosterSyncText -notmatch 'left\.rankIndex < right\.rankIndex' -or
+    $rosterSyncText -notmatch 'if revision and revision > 0 then' -or
     $commsText -notmatch 'IsRosterKind' -or
     $uiText -notmatch 'canManageRoster.*isRosterMember' -or
     $uiText -notmatch '\{\s*"roster",\s*"attendance",\s*"meter",\s*"history"\s*\}' -or
@@ -373,13 +386,25 @@ if ($constantsText -notmatch 'autoPugRaids\s*=\s*false' -or
     $historyMeterText -notmatch 'EventMatchesRaidTag') {
     throw "Automatic Pugs tracking, authority bypass, meter behavior, or raid-tag history filters appear incomplete."
 }
+if ($uiText -notmatch 'function LV\.UI:FirstGuildRaidAppearances' -or
+    $uiText -notmatch 'not LV\.Store:IsGlobalPugTeam\(raid\.team\)' -or
+    $uiText -notmatch 'teamID\s*==\s*"all"\s+and\s+not\s+isPugRaid' -or
+    $uiText -notmatch 'status\s*=\s*beforeJoin\s+and\s+"prejoin"' -or
+    $uiText -notmatch 'row\.eligibleRaids\s*=\s*math\.max' -or
+    $uiText -notmatch 'meterShowPugs\s*==\s*nil' -or
+    $uiText -notmatch 'Not Yet Joined') {
+    throw "Attendance join eligibility, gray pre-join history, Pugs-team isolation, or the default Show Pugs behavior appears incomplete."
+}
 if ($uiText -notmatch 'CreateHistoryDifficultySlider' -or
     $uiText -notmatch 'Minimum Difficulty' -or
     $uiText -notmatch 'EventMeetsMinimumDifficulty' -or
     $uiText -notmatch 'Loot Filters' -or
     $historyMeterText -notmatch 'lfr\s*=\s*\{\s*0\.46' -or
     $historyMeterText -notmatch 'difficulty\s*==\s*"L"' -or
-    $historyMeterText -notmatch 'RaidDifficultyBuckets') {
+    $historyMeterText -notmatch 'RaidDifficultyBuckets' -or
+    $historyMeterText -notmatch 'EventMatchesRaidTag\(record, row, self\.historyTeamID, true\)' -or
+    $uiText -notmatch 'excludePugsFromAll' -or
+    $uiText -notmatch 'not LV\.Store:IsGlobalPugTeam\(raidTeamID\)') {
     throw "The Loot History filter panel, minimum-difficulty threshold, or gray LFR distribution segment appears incomplete."
 }
 if ($uiText -notmatch '\[250\]\s*=\s*"Raid Finder"' -or
@@ -501,6 +526,12 @@ if ($seasonText -notmatch 'DungeonFilterValues' -or
     throw "Dungeon distribution/search filters, raid detail context, or the formatted Recent loot table appears incomplete."
 }
 if ($tradeText -notmatch 'RecordManualTrade' -or
+    $tradeText -notmatch 'normalizeTradePartyName' -or
+    $tradeText -notmatch 'candidate\s*==\s*lootRow' -or
+    $tradeText -notmatch 'ensureUniqueLootEventID' -or
+    $tradeText -notmatch 'sourceLootOverride' -or
+    $storeText -notmatch 'function LV\.Store:GuildBankNameID' -or
+    $storeText -notmatch 'Trim\(fullName\):lower\(\)\s*==\s*"guild bank"' -or
     $tradeText -notmatch 'sourceLootID' -or
     $tradeText -notmatch 'parts\[7\]' -or
     $tradeText -notmatch 'if\s+not\s+sourceLoot\s+or\s+sourceLoot\.src\s*==\s*"bonus"\s+then' -or
@@ -511,6 +542,8 @@ if ($tradeText -notmatch 'RecordManualTrade' -or
     $uiText -notmatch 'RaidLootRecipientValues' -or
     $uiText -notmatch 'Trade Item' -or
     $uiText -notmatch 'Exclude Loot' -or
+    $uiText -notmatch '"Loot \("\s*\.\.\s*tostring\(#lootRows\)' -or
+    $uiText -notmatch 'self:CreateHistoryItemButton\(lootSection' -or
     $historyMeterText -notmatch '#entries / maxTotal' -or
     $historyMeterText -notmatch 'maxTotal = math\.max') {
     throw "Trade-to-loot linkage, manual per-loot trade options, or proportional Distribution meter scaling appears incomplete."

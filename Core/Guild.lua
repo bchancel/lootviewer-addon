@@ -584,6 +584,9 @@ function LV.Guild:SetRosterOverride(guildKey, fullName, tag, mainName)
         ts = LV.Util:Now(),
         by = LV.Store:NameID(guildKey, LV.Util:PlayerFullName()),
     }
+    if LV.Raid and LV.Raid.ReconcileGuildLinkedAttendance then
+        LV.Raid:ReconcileGuildLinkedAttendance(guildKey)
+    end
 end
 
 LV:RegisterEvent("PLAYER_LOGIN", function()

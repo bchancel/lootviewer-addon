@@ -1,5 +1,16 @@
 # Changelog
 
+## 12.1.8 - 2026-08-28
+
+1. Player searches now support clickable Name-Realm results and avoid accidental cross-realm duplicates.
+2. Roster syncing now reliably selects the newest authoritative snapshot.
+3. Roster editing is faster, with team, type, and role controls shown beside the selected player.
+4. Roster and attendance lists now use consistent player cards with roster-status and alt icons.
+5. Main-to-alt swaps retain the player's correct attendance status.
+6. Attendance begins with a player's first guild raid, shows earlier raids in gray, and excludes Pugs from All Teams.
+7. Loot can be assigned to Guild Bank, including historical BoEs with legacy data issues.
+8. Raid details now show the night's loot, while loot Distribution excludes Pugs unless selected directly.
+
 ## 12.1.7 - 2026-08-25
 
 1. Helpers now appear in their own roster category instead of under their primary combat role.

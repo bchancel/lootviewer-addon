@@ -695,17 +695,27 @@ function LV.Widgets:SearchDropdown(parent, values, getValue, setValue, width, ma
         end
     end
 
+    local function selectSearchItem(clicked)
+        local item = clicked and clicked._lvItem
+        if not item then
+            return
+        end
+        -- Select on mouse-down because clicking a result first removes focus
+        -- from the edit box. Waiting for OnClick lets the focus-loss handler
+        -- hide the result button before it receives mouse-up.
+        edit:SetText(item.label)
+        setValue(item.value, item)
+        edit:ClearFocus()
+        hideMenu()
+    end
+
     for index = 1, maxVisible do
-        local row = self:Button(menu, "", width or 180, 24, function(clicked)
-            local item = clicked._lvItem
-            if not item then
-                return
+        local row = self:Button(menu, "", width or 180, 24, nil, "ghost")
+        row:HookScript("OnMouseDown", function(clicked, mouseButton)
+            if mouseButton == "LeftButton" then
+                selectSearchItem(clicked)
             end
-            edit:SetText(item.label)
-            setValue(item.value, item)
-            edit:ClearFocus()
-            hideMenu()
-        end, "ghost")
+        end)
         row:SetPoint("TOPLEFT", 0, -((index - 1) * 24))
         row:SetPoint("RIGHT", 0, 0)
         rows[index] = row

@@ -115,7 +115,7 @@ function LV.UI:RaidLootDistributionRows(guildKey)
         local warbound = LV.Loot and LV.Loot.IsWarboundRow and LV.Loot:IsWarboundRow(guildKey, row)
         if bucket and row.src ~= "bonus" and not excluded and not warbound
             and LV.Seasons:EventMatchesFilter(guildKey, record, row, self:SelectedSeasonFilter())
-            and self:EventMatchesRaidTag(record, row, self.historyTeamID)
+            and self:EventMatchesRaidTag(record, row, self.historyTeamID, true)
             and self:EventMeetsMinimumDifficulty(guildKey, record, row) then
             local owner = self:RaidFinalLootOwner(record, row)
             local mainID = self:AttendanceRollupID(guildKey, owner)

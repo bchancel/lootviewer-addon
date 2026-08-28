@@ -11,7 +11,7 @@ local function ensureTable(parent, key)
 end
 
 local DEFAULT_TEAM_COLOR = { r = 0.1725, g = 0.5569, b = 0.8275, a = 0.8 }
-local TEAM_ROSTER_TYPES = { raider = true, trial = true, helper = true }
+local TEAM_ROSTER_TYPES = { raider = true, trial = true, helper = true, social = true }
 local TEAM_ROSTER_ROLES = { tank = true, healer = true, melee = true, ranged = true }
 local GLOBAL_PUG_TEAM = {
     id = "pugs",
@@ -547,6 +547,21 @@ end
 
 function LV.Store:NameID(guildKey, name)
     return self:DictionaryID(guildKey, "n", name)
+end
+
+function LV.Store:GuildBankNameID(guildKey)
+    local record = self:GuildRecord(guildKey)
+    if not record or type(record.d) ~= "table" or type(record.d.n) ~= "table" then
+        return nil
+    end
+
+    for nameID, fullName in ipairs(record.d.n) do
+        if LV.Util:Trim(fullName):lower() == "guild bank" then
+            return nameID
+        end
+    end
+
+    return self:NameID(guildKey, "Guild Bank")
 end
 
 function LV.Store:ItemID(guildKey, itemLink)

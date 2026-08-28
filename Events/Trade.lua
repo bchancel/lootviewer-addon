@@ -30,6 +30,30 @@ local function lootEventByID(record, lootID)
     return nil
 end
 
+local function ensureUniqueLootEventID(record, lootRow)
+    local currentID = LV.Util:Trim(lootRow and lootRow.id)
+    local matchingRows = 0
+    local ownsCurrentID = false
+    if currentID ~= "" then
+        for _, candidate in ipairs((record and record.l) or {}) do
+            if type(candidate) == "table" and tostring(candidate.id or "") == currentID then
+                matchingRows = matchingRows + 1
+                ownsCurrentID = ownsCurrentID or candidate == lootRow
+            end
+        end
+        if ownsCurrentID and matchingRows == 1 then
+            return lootRow.id
+        end
+    end
+
+    local newID
+    repeat
+        newID = LV.Store:NewID(record, "loot", "l")
+    until not lootEventByID(record, newID)
+    lootRow.id = newID
+    return newID
+end
+
 local function lootEventByRemoteID(record, sender, remoteID)
     if LV.Util:IsBlank(sender) or LV.Util:IsBlank(remoteID) then
         return nil
@@ -92,6 +116,14 @@ local function finalLootOwner(record, lootRow)
         end
     end
     return owner
+end
+
+local function normalizeTradePartyName(name)
+    name = LV.Util:Trim(name)
+    if name:lower() == "guild bank" then
+        return "Guild Bank"
+    end
+    return LV.Loot:NormalizePlayerName(name)
 end
 
 function LV.Trade:Begin()
@@ -222,18 +254,19 @@ function LV.Trade:FindDuplicate(record, timestamp, fromID, toID, itemKeyID, item
     return nil
 end
 
-function LV.Trade:RecordTrade(fromName, toName, itemLink, source, remoteTS, remoteBy, sourceLootID, guildKeyOverride, receivedRemote, remoteSender, remoteTradeID)
+function LV.Trade:RecordTrade(fromName, toName, itemLink, source, remoteTS, remoteBy, sourceLootID, guildKeyOverride, receivedRemote, remoteSender, remoteTradeID, sourceLootOverride)
     local guildKey = guildKeyOverride or LV.Guild:CurrentKey()
     if not guildKey then
         return nil
     end
 
-    fromName = LV.Loot:NormalizePlayerName(fromName)
-    toName = LV.Loot:NormalizePlayerName(toName)
+    fromName = normalizeTradePartyName(fromName)
+    toName = normalizeTradePartyName(toName)
     remoteSender = LV.Util:IsBlank(remoteSender) and nil or LV.Loot:NormalizePlayerName(remoteSender)
     local record = LV.Store:GuildRecord(guildKey)
     local timestamp = tonumber(remoteTS) or LV.Util:Now()
-    local sourceLoot = (remoteSender and lootEventByRemoteID(record, remoteSender, sourceLootID))
+    local sourceLoot = (type(sourceLootOverride) == "table" and sourceLootOverride)
+        or (remoteSender and lootEventByRemoteID(record, remoteSender, sourceLootID))
         or (not remoteSender and lootEventByID(record, sourceLootID))
         or LV.Loot:FindTradeSource(guildKey, fromName, itemLink, timestamp)
     if not sourceLoot or sourceLoot.src == "bonus" then
@@ -323,14 +356,22 @@ function LV.Trade:RecordManualTrade(guildKey, lootRow, recipientID)
         LV:Print("Bonus-roll loot cannot be traded.")
         return nil
     end
-    local sourceLoot = lootEventByID(record, lootRow.id)
-    if sourceLoot ~= lootRow then
+    local sourceLoot
+    for _, candidate in ipairs(record.l or {}) do
+        if candidate == lootRow then
+            sourceLoot = candidate
+            break
+        end
+    end
+    sourceLoot = sourceLoot or lootEventByID(record, lootRow.id)
+    if not sourceLoot then
         LV:Print("LootViewer could not find that loot event.")
         return nil
     end
+    ensureUniqueLootEventID(record, sourceLoot)
 
     recipientID = tonumber(recipientID)
-    local ownerID = finalLootOwner(record, lootRow)
+    local ownerID = finalLootOwner(record, sourceLoot)
     local fromName = LV.Store:DictionaryValue(guildKey, "n", ownerID)
     local toName = LV.Store:DictionaryValue(guildKey, "n", recipientID)
     if fromName == "" or toName == "" then
@@ -342,8 +383,25 @@ function LV.Trade:RecordManualTrade(guildKey, lootRow, recipientID)
         return nil
     end
 
-    local itemKey = LV.Store:DictionaryValue(guildKey, "i", lootRow.item)
-    return self:RecordTrade(fromName, toName, itemKey, "manual", nil, nil, lootRow.id, guildKey)
+    local itemKey = LV.Store:DictionaryValue(guildKey, "i", sourceLoot.item)
+    local recorded = self:RecordTrade(
+        fromName,
+        toName,
+        itemKey,
+        "manual",
+        nil,
+        nil,
+        sourceLoot.id,
+        guildKey,
+        false,
+        nil,
+        nil,
+        sourceLoot
+    )
+    if not recorded then
+        LV:Print("LootViewer could not record that historical trade.")
+    end
+    return recorded
 end
 
 function LV.Trade:ObserveRemoteTrade(parts, sender)

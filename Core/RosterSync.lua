@@ -11,6 +11,8 @@ local ROSTER_KINDS = {
     LRU = true,
 }
 
+local SNAPSHOT_ELECTION_DELAY = 1.5
+
 local function normalizedSender(sender)
     sender = LV.Util:Trim(sender)
     if sender ~= "" and not sender:find("-", 1, true) then
@@ -77,7 +79,7 @@ function LV.RosterSync:SendSnapshot(target, guildKey, nonce)
     if not record then
         return false
     end
-    local delay = 0
+    local snapshots = {}
     for _, team in ipairs((record.cfg and record.cfg.teams) or {}) do
         local roster = type(team.ro) == "table" and team.ro or {}
         local rows = {}
@@ -96,21 +98,36 @@ function LV.RosterSync:SendSnapshot(target, guildKey, nonce)
         end
         table.sort(rows, function(a, b) return a.fullName:lower() < b.fullName:lower() end)
         local revision = tonumber(team.rt)
-        if not revision or revision <= 0 then
-            revision = LV.Util:ServerNow()
-            team.rt = revision
+        -- A fresh or migrated client has no authoritative roster revision.
+        -- It must not claim a current timestamp merely because someone asked
+        -- for a snapshot; the first real roster edit establishes its revision.
+        if revision and revision > 0 then
+            snapshots[#snapshots + 1] = {
+                teamID = team.id,
+                revision = revision,
+                rows = rows,
+            }
         end
+    end
+
+    -- Advertise every team first so requesters can elect a winner before the
+    -- larger player payloads make different publishers finish out of order.
+    local delay = 0
+    for _, snapshot in ipairs(snapshots) do
         self:QueueWhisper("LRS", target,
-            { guildKey, nonce, team.id, revision, #rows }, delay)
+            { guildKey, nonce, snapshot.teamID, snapshot.revision, #snapshot.rows }, delay)
         delay = delay + 0.10
-        for _, row in ipairs(rows) do
+    end
+    for _, snapshot in ipairs(snapshots) do
+        for _, row in ipairs(snapshot.rows) do
             self:QueueWhisper("LRP", target, {
-                guildKey, nonce, team.id, revision, row.fullName, row.rosterType,
+                guildKey, nonce, snapshot.teamID, snapshot.revision, row.fullName, row.rosterType,
                 row.primaryRole, row.secondaryRole, row.className,
             }, delay)
             delay = delay + 0.10
         end
-        self:QueueWhisper("LRE", target, { guildKey, nonce, team.id, revision }, delay)
+        self:QueueWhisper("LRE", target,
+            { guildKey, nonce, snapshot.teamID, snapshot.revision }, delay)
         delay = delay + 0.10
     end
     return true
@@ -157,6 +174,93 @@ function LV.RosterSync:CanAccept(sender, guildKey)
     local allowed = LV.Guild:CanAcceptRosterPublisher(guildKey, sender)
     self.publisherCache[key] = { allowed = allowed, expires = now + 60 }
     return allowed
+end
+
+local function betterSnapshotCandidate(left, right)
+    if not right then
+        return true
+    elseif left.revision ~= right.revision then
+        return left.revision > right.revision
+    elseif left.rankIndex ~= right.rankIndex then
+        return left.rankIndex < right.rankIndex
+    end
+    return left.senderKey < right.senderKey
+end
+
+function LV.RosterSync:FinishSnapshotElection(electionKey)
+    local election = self.snapshotElections and self.snapshotElections[electionKey]
+    if not election or not election.winnerStageKey then
+        return false
+    end
+    local stage = self.inbound and self.inbound[election.winnerStageKey]
+    if not stage or not stage.complete then
+        return false
+    end
+
+    for _, candidate in pairs(election.candidates) do
+        self.inbound[candidate.stageKey] = nil
+    end
+    self.snapshotElections[electionKey] = nil
+    return self:ApplySnapshot(stage.sender, stage)
+end
+
+function LV.RosterSync:ResolveSnapshotElection(electionKey)
+    local election = self.snapshotElections and self.snapshotElections[electionKey]
+    if not election or election.resolved then
+        return false
+    end
+
+    local winner
+    for _, candidate in pairs(election.candidates) do
+        if betterSnapshotCandidate(candidate, winner) then
+            winner = candidate
+        end
+    end
+    election.resolved = true
+    election.winnerStageKey = winner and winner.stageKey or nil
+    if not winner then
+        self.snapshotElections[electionKey] = nil
+        return false
+    end
+
+    for _, candidate in pairs(election.candidates) do
+        if candidate.stageKey ~= winner.stageKey then
+            self.inbound[candidate.stageKey] = nil
+        end
+    end
+    return self:FinishSnapshotElection(electionKey)
+end
+
+function LV.RosterSync:ConsiderSnapshotCandidate(sender, nonce, teamID, stageKey, stage)
+    self.snapshotElections = self.snapshotElections or {}
+    local electionKey = tostring(nonce) .. "|" .. tostring(teamID)
+    local election = self.snapshotElections[electionKey]
+    if not election then
+        election = { candidates = {} }
+        self.snapshotElections[electionKey] = election
+    elseif election.resolved then
+        return electionKey, false
+    end
+
+    local fullName = normalizedSender(sender)
+    local senderKey = fullName:lower()
+    election.candidates[senderKey] = {
+        senderKey = senderKey,
+        stageKey = stageKey,
+        revision = stage.revision,
+        rankIndex = tonumber(LV.Guild:RosterMemberRank(stage.guildKey, fullName)) or 999,
+    }
+    if not election.scheduled then
+        election.scheduled = true
+        if C_Timer and C_Timer.After then
+            C_Timer.After(SNAPSHOT_ELECTION_DELAY, function()
+                LV.RosterSync:ResolveSnapshotElection(electionKey)
+            end)
+        else
+            self:ResolveSnapshotElection(electionKey)
+        end
+    end
+    return electionKey, true
 end
 
 function LV.RosterSync:ApplySnapshot(sender, stage)
@@ -220,12 +324,22 @@ function LV.RosterSync:HandleMessage(parts, sender, channel)
                 revision = revision,
                 expected = expected,
                 rows = {},
+                sender = normalizedSender(sender),
             }
             local stage = self.inbound[key]
-            if C_Timer and C_Timer.After then
-                C_Timer.After(20, function()
+            local accepted
+            stage.electionKey, accepted = self:ConsiderSnapshotCandidate(sender, nonce, teamID, key, stage)
+            if not accepted then
+                self.inbound[key] = nil
+            elseif C_Timer and C_Timer.After then
+                local timeout = math.max(20, (expected * 0.10) + 10)
+                C_Timer.After(timeout, function()
                     if self.inbound and self.inbound[key] == stage then
                         self.inbound[key] = nil
+                        local election = self.snapshotElections and self.snapshotElections[stage.electionKey]
+                        if election and election.winnerStageKey == key then
+                            self.snapshotElections[stage.electionKey] = nil
+                        end
                         self:ScheduleRetry()
                     end
                 end)
@@ -249,8 +363,11 @@ function LV.RosterSync:HandleMessage(parts, sender, channel)
         local key = normalizedSender(sender):lower() .. "|" .. tostring(nonce or "") .. "|" .. tostring(teamID or "")
         local stage = self.inbound and self.inbound[key]
         if stage and tonumber(parts[5]) == stage.revision then
-            self.inbound[key] = nil
-            if not self:ApplySnapshot(sender, stage) and #stage.rows ~= stage.expected then
+            stage.complete = #stage.rows == stage.expected
+            local election = self.snapshotElections and self.snapshotElections[stage.electionKey]
+            if stage.complete and election and election.resolved and election.winnerStageKey == key then
+                self:FinishSnapshotElection(stage.electionKey)
+            elseif not stage.complete then
                 self:ScheduleRetry()
             end
         end
