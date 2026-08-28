@@ -395,6 +395,35 @@ if ($uiText -notmatch 'function LV\.UI:FirstGuildRaidAppearances' -or
     $uiText -notmatch 'Not Yet Joined') {
     throw "Attendance join eligibility, gray pre-join history, Pugs-team isolation, or the default Show Pugs behavior appears incomplete."
 }
+if ($uiText -notmatch 'function LV\.UI:AttendanceMeterRate' -or
+    $uiText -notmatch 'local aRate = self:AttendanceMeterRate\(a\)' -or
+    $uiText -notmatch 'if aRate ~= bRate then[\s\S]*?return aRate > bRate' -or
+    $uiText -notmatch 'if a\.eligibleRaids ~= b\.eligibleRaids then' -or
+    $uiText -notmatch 'self:AttendanceMeterRate\(row, raidCount\) \* 100') {
+    throw "Attendance Meter rows are no longer sorted and displayed from the same attendance percentage calculation."
+}
+if ($uiText -match 'ATTENDANCE_PAGE_SIZE' -or
+    $uiText -match 'self\.attendanceOffset' -or
+    $uiText -notmatch 'local historyScroll, historyContent = LV\.Widgets:ScrollFrame\(parent\)' -or
+    $uiText -notmatch 'self\.attendanceHistoryScroll = selfScroll:GetVerticalScroll\(\)' -or
+    $uiText -notmatch 'LV\.Widgets:Section\(self\.content, "Raid Details"' -or
+    $uiText -notmatch 'LV\.Widgets:Section\(scrollContent, "Raid Information", cardHeight\)' -or
+    $uiText -notmatch 'LV\.Widgets:Section\(scrollContent, "Details", cardHeight\)' -or
+    $uiText -notmatch 'detailsTime:SetPoint\("LEFT", details\.title, "RIGHT"' -or
+    $uiText -notmatch 'addDetailCell\("Tag"' -or
+    $uiText -notmatch 'addDetailCell\("Players"' -or
+    $uiText -notmatch 'addDetailCell\("Kills"' -or
+    $uiText -notmatch 'addDetailCell\("Loot"' -or
+    $uiText -notmatch 'bossText:SetWordWrap\(true\)') {
+    throw "Raid History no longer has its scrollable night list or two-card selected-raid summary."
+}
+if ($uiText -notmatch 'RAID_HISTORY_GUILD_FILTER\s*=\s*"__guild_raids__"' -or
+    $uiText -notmatch 'function LV\.UI:RaidHistoryTagValues' -or
+    $uiText -notmatch 'label\s*=\s*"All Guild Raids"' -or
+    $uiText -notmatch 'not LV\.Store:IsGlobalPugTeam\(raid and raid\.team\)' -or
+    $uiText -notmatch 'local defaultRaidFilter = hasGuildRaids and RAID_HISTORY_GUILD_FILTER or LV\.Constants\.PUG_TEAM_ID') {
+    throw "Raid History no longer defaults to guild raids or isolates Pugs in its raid selector."
+}
 if ($uiText -notmatch 'CreateHistoryDifficultySlider' -or
     $uiText -notmatch 'Minimum Difficulty' -or
     $uiText -notmatch 'EventMeetsMinimumDifficulty' -or

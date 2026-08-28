@@ -1,5 +1,12 @@
 # Changelog
 
+## 12.1.9 - 2026-08-28
+
+1. Raid Nights now uses a scrollable list instead of page buttons.
+2. Raid Details now uses compact side-by-side cards with wrapped boss names and key raid totals.
+3. Raid History now defaults to guild raids, lists each team separately, and keeps Pugs isolated.
+4. Attendance Meter now sorts players by attendance percentage.
+
 ## 12.1.8 - 2026-08-28
 
 1. Player searches now support clickable Name-Realm results and avoid accidental cross-realm duplicates.

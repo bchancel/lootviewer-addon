@@ -3,9 +3,9 @@ local _, LV = ...
 LV.UI = {}
 LV.modules.UI = LV.UI
 
-local ATTENDANCE_PAGE_SIZE = 6
 local METER_DETAIL_PAGE_SIZE = 5
 local HISTORY_PAGE_SIZE = 15
+local RAID_HISTORY_GUILD_FILTER = "__guild_raids__"
 
 local difficultyLabels = {
     [14] = "Normal",
@@ -997,6 +997,17 @@ function LV.UI:RaidTagValues(cfg)
     return values
 end
 
+function LV.UI:RaidHistoryTagValues(cfg)
+    local values = {
+        { value = RAID_HISTORY_GUILD_FILTER, label = "All Guild Raids" },
+    }
+    for _, team in ipairs((cfg and cfg.teams) or {}) do
+        values[#values + 1] = { value = team.id, label = team.name }
+    end
+    values[#values + 1] = { value = LV.Constants.PUG_TEAM_ID, label = LV.Constants.PUG_TEAM_NAME }
+    return values
+end
+
 function LV.UI:IsValidRaidTag(values, teamID)
     for _, item in ipairs(values or {}) do
         if item.value == teamID then
@@ -1387,7 +1398,7 @@ function LV.UI:MoveHistoricalRaidToTeam(guildKey, raidID, teamID)
     raid.tn = LV.Store:StringID(guildKey, team.name)
     raid.lastBy = LV.Store:NameID(guildKey, LV.Util:PlayerFullName())
     raid.lastSource = "ui_team_move"
-    if self.attendanceTeamID and self.attendanceTeamID ~= "all" then
+    if self.attendanceTeamID and self.attendanceTeamID ~= RAID_HISTORY_GUILD_FILTER then
         self.attendanceTeamID = team.id
     end
     LV:Print("Moved raid from " .. tostring(previousName) .. " to " .. tostring(team.name)
@@ -1408,9 +1419,15 @@ end
 function LV.UI:AttendanceRows(guildKey, record, seasonFilter, teamID)
     local rows = {}
     for raidID, raid in pairs((record and record.r) or {}) do
+        local matchesTeam
+        if teamID == RAID_HISTORY_GUILD_FILTER then
+            matchesTeam = not LV.Store:IsGlobalPugTeam(raid and raid.team)
+        else
+            matchesTeam = self:RaidMatchesTag(raid, teamID)
+        end
         if type(raid) == "table"
             and LV.Seasons:RaidMatchesFilter(guildKey, raid, seasonFilter)
-            and self:RaidMatchesTag(raid, teamID) then
+            and matchesTeam then
             rows[#rows + 1] = { id = raidID, raid = raid }
         end
     end
@@ -1604,6 +1621,17 @@ function LV.UI:AltRowsForMain(guildKey, mainID)
     return rows
 end
 
+function LV.UI:AttendanceMeterRate(row, raidCount)
+    local eligibleRaids = tonumber(row and row.eligibleRaids)
+    if eligibleRaids == nil then
+        eligibleRaids = tonumber(raidCount) or 0
+    end
+    if eligibleRaids <= 0 then
+        return 0
+    end
+    return ((row and row.attended) or 0) / eligibleRaids
+end
+
 function LV.UI:AttendanceMeterRows(guildKey, record, range, teamID, showPugs)
     local players = {}
     local raidRows = {}
@@ -1708,11 +1736,13 @@ function LV.UI:AttendanceMeterRows(guildKey, record, range, teamID, showPugs)
     end
 
     table.sort(rows, function(a, b)
-        if a.attended ~= b.attended then
-            return a.attended > b.attended
+        local aRate = self:AttendanceMeterRate(a)
+        local bRate = self:AttendanceMeterRate(b)
+        if aRate ~= bRate then
+            return aRate > bRate
         end
-        if a.total ~= b.total then
-            return a.total > b.total
+        if a.eligibleRaids ~= b.eligibleRaids then
+            return a.eligibleRaids > b.eligibleRaids
         end
         return compareText(a.name, b.name)
     end)
@@ -2319,10 +2349,16 @@ function LV.UI:RenderAttendance()
     local record = LV.Store:GuildRecord(guildInfo.key)
     local cfg = LV.Store:GetConfig(guildInfo.key)
     self.attendanceSeason = self:SelectedSeasonFilter()
-    local tagValues = self:RaidTagValues(cfg)
-    self.attendanceTeamID = self.attendanceTeamID or "all"
+    local tagValues = self:RaidHistoryTagValues(cfg)
+    local hasGuildRaids = #self:AttendanceRows(
+        guildInfo.key,
+        record,
+        self.attendanceSeason,
+        RAID_HISTORY_GUILD_FILTER
+    ) > 0
+    local defaultRaidFilter = hasGuildRaids and RAID_HISTORY_GUILD_FILTER or LV.Constants.PUG_TEAM_ID
     if not self:IsValidRaidTag(tagValues, self.attendanceTeamID) then
-        self.attendanceTeamID = "all"
+        self.attendanceTeamID = defaultRaidFilter
     end
     local session = LV.Raid:GetActiveSession()
     local statusText = "No active raid"
@@ -2348,7 +2384,7 @@ function LV.UI:RenderAttendance()
     end, function(value)
         self.attendanceTeamID = value
         self.attendanceSelectedRaid = nil
-        self.attendanceOffset = 0
+        self.attendanceHistoryScroll = 0
         self.attendanceDetailOffset = 0
         self.editingRaidID = nil
         self.pugEditRaidID = nil
@@ -2361,7 +2397,7 @@ function LV.UI:RenderAttendance()
     summary:SetPoint("RIGHT", -22, 0)
     self:RenderAttendanceHistory(summary, guildInfo.key, record)
 
-    local detail = LV.Widgets:Section(self.content, "Attendance Detail", 220)
+    local detail = LV.Widgets:Section(self.content, "Raid Details", 220)
     detail:SetPoint("TOPLEFT", summary, "BOTTOMLEFT", 0, -18)
     detail:SetPoint("BOTTOMRIGHT", -22, 22)
     self:RenderAttendanceDetail(detail, guildInfo.key, record)
@@ -2369,10 +2405,6 @@ end
 
 function LV.UI:RenderAttendanceHistory(parent, guildKey, record)
     local rows = self:AttendanceRows(guildKey, record, self.attendanceSeason, self.attendanceTeamID)
-    self.attendanceOffset = tonumber(self.attendanceOffset) or 0
-    if self.attendanceOffset >= #rows then
-        self.attendanceOffset = math.max(0, #rows - ATTENDANCE_PAGE_SIZE)
-    end
     local selectedVisible = false
     for _, row in ipairs(rows) do
         if tostring(row.id) == tostring(self.attendanceSelectedRaid) then
@@ -2390,12 +2422,7 @@ function LV.UI:RenderAttendanceHistory(parent, guildKey, record)
         end
         self.attendanceSelectedRaid = activeRaidID or rows[1].id
         self.attendanceDetailOffset = 0
-        for index, row in ipairs(rows) do
-            if tostring(row.id) == tostring(self.attendanceSelectedRaid) then
-                self.attendanceOffset = math.floor((index - 1) / ATTENDANCE_PAGE_SIZE) * ATTENDANCE_PAGE_SIZE
-                break
-            end
-        end
+        self.attendanceHistoryScroll = 0
     elseif #rows == 0 then
         self.attendanceSelectedRaid = nil
         self.editingRaidID = nil
@@ -2405,25 +2432,6 @@ function LV.UI:RenderAttendanceHistory(parent, guildKey, record)
     local count = LV.Widgets:Text(parent.header, tostring(#rows) .. " raid(s)")
     count:SetTextColor(unpack(LV.Widgets.colors.muted))
     count:SetPoint("RIGHT", -18, 0)
-
-    local newer = LV.Widgets:Button(parent.header, "<", 26, 22, function()
-        self.attendanceOffset = math.max(0, (self.attendanceOffset or 0) - ATTENDANCE_PAGE_SIZE)
-        self:Refresh()
-    end)
-    newer:SetPoint("RIGHT", count, "LEFT", -10, 0)
-
-    local older = LV.Widgets:Button(parent.header, ">", 26, 22, function()
-        self.attendanceOffset = math.min(math.max(0, #rows - ATTENDANCE_PAGE_SIZE), (self.attendanceOffset or 0) + ATTENDANCE_PAGE_SIZE)
-        self:Refresh()
-    end)
-    older:SetPoint("RIGHT", newer, "LEFT", -6, 0)
-
-    if self.attendanceOffset <= 0 then
-        newer:Hide()
-    end
-    if self.attendanceOffset >= math.max(0, #rows - ATTENDANCE_PAGE_SIZE) then
-        older:Hide()
-    end
 
     local headers = {
         { "Date", 24 },
@@ -2449,18 +2457,24 @@ function LV.UI:RenderAttendanceHistory(parent, guildKey, record)
         return
     end
 
-    local y = -78
-    for index = self.attendanceOffset + 1, math.min(#rows, self.attendanceOffset + ATTENDANCE_PAGE_SIZE) do
-        local row = rows[index]
+    local historyScroll, historyContent = LV.Widgets:ScrollFrame(parent)
+    historyScroll:SetPoint("TOPLEFT", 4, -70)
+    historyScroll:SetPoint("BOTTOMRIGHT", -10, 8)
+    historyScroll:HookScript("OnVerticalScroll", function(selfScroll)
+        self.attendanceHistoryScroll = selfScroll:GetVerticalScroll()
+    end)
+
+    local y = -2
+    for index, row in ipairs(rows) do
         local raid = row.raid
         local selected = tostring(self.attendanceSelectedRaid) == tostring(row.id)
         local active = record.cur and tostring(record.cur) == tostring(row.id)
         local rowColor = selected and LV.Widgets.colors.active or (active and LV.Widgets.colors.header or LV.Widgets.colors.panel)
         local borderColor = active and LV.Widgets.colors.yellow or LV.Widgets.colors.border
 
-        local rowButton = CreateFrame("Button", nil, parent, "BackdropTemplate")
-        rowButton:SetPoint("TOPLEFT", 16, y + 5)
-        rowButton:SetPoint("TOPRIGHT", -18, y + 5)
+        local rowButton = CreateFrame("Button", nil, historyContent, "BackdropTemplate")
+        rowButton:SetPoint("TOPLEFT", 12, y)
+        rowButton:SetPoint("TOPRIGHT", -8, y)
         rowButton:SetHeight(24)
         LV.Widgets:ApplyBackdrop(rowButton, rowColor, borderColor)
         self:DrawTeamAccent(rowButton, guildKey, raid)
@@ -2542,6 +2556,11 @@ function LV.UI:RenderAttendanceHistory(parent, guildKey, record)
         LV.Widgets:SetTooltip(delete, "Delete this raid attendance record.")
         y = y - 28
     end
+    historyContent:SetHeight(math.max(1, (#rows * 28) + 4))
+    historyScroll:SetVerticalScroll(math.max(0, math.min(
+        tonumber(self.attendanceHistoryScroll) or 0,
+        historyScroll:GetVerticalScrollRange()
+    )))
 end
 
 function LV.UI:RenderAttendanceDetail(parent, guildKey, record)
@@ -2553,9 +2572,6 @@ function LV.UI:RenderAttendanceDetail(parent, guildKey, record)
         return
     end
 
-    local title = LV.Widgets:Text(parent, date("%m/%d/%y %H:%M", tonumber(raid.st) or 0) .. "  " .. self:RaidTeamName(guildKey, raid))
-    title:SetPoint("TOPLEFT", 24, -48)
-
     local editMode = self.editingRaidID == self.attendanceSelectedRaid
     if editMode then
         local done = LV.Widgets:Button(parent, "Done", 56, 22, function()
@@ -2563,19 +2579,13 @@ function LV.UI:RenderAttendanceDetail(parent, guildKey, record)
             self.pugEditRaidID = nil
             self:Refresh()
         end)
-        done:SetPoint("TOPRIGHT", -24, -44)
+        done:SetPoint("RIGHT", parent.header, "RIGHT", -8, 0)
     end
 
-    local ended = tonumber(raid.en) or tonumber(raid.st) or 0
-    local duration = math.max(0, math.floor((ended - (tonumber(raid.st) or ended)) / 60))
-    local meta = LV.Widgets:Text(parent, tostring(duration) .. " min  " .. tostring(#(raid.kills or {})) .. " boss kill(s)")
-    meta:SetTextColor(unpack(LV.Widgets.colors.muted))
-    meta:SetPoint("TOPLEFT", 24, -72)
-
-    local scrollTop = -98
+    local scrollTop = -36
     if editMode then
         local teamLabel = LV.Widgets:Label(parent, "Raid Team")
-        teamLabel:SetPoint("TOPLEFT", 24, -102)
+        teamLabel:SetPoint("TOPLEFT", 24, -48)
         local teamValues = self:TeamValues(record.cfg)
         local currentTeamID = raid.team or "main"
         if not self:IsValidRaidTag(teamValues, currentTeamID) then
@@ -2593,7 +2603,7 @@ function LV.UI:RenderAttendanceDetail(parent, guildKey, record)
         LV.Widgets:SetTooltip(team, "Move this raid session and all linked attendance, kills, loot, and trades to another raid team.")
 
         local addLabel = LV.Widgets:Label(parent, "Add Player")
-        addLabel:SetPoint("TOPLEFT", 24, -138)
+        addLabel:SetPoint("TOPLEFT", 24, -84)
 
         local playerValues = {}
         for _, candidate in ipairs(self:TeamRosterCandidates(guildKey, record, raid.team or "main")) do
@@ -2626,7 +2636,7 @@ function LV.UI:RenderAttendanceDetail(parent, guildKey, record)
             LV.Widgets:SetTooltip(addButton, "Add player to " .. optionLabel .. ".")
             previous = addButton
         end
-        scrollTop = -174
+        scrollTop = -120
     end
 
     local hereMap = self:ExclusiveHereMap(raid)
@@ -2638,6 +2648,27 @@ function LV.UI:RenderAttendanceDetail(parent, guildKey, record)
         { "Out", "out", raid.out },
         { "NoShow", "noshow", raid.noshow },
     }
+
+    local lootRows = {}
+    for _, lootRow in ipairs(record.l or {}) do
+        local linkedToRaid = type(lootRow) == "table"
+            and tostring(lootRow.sid or "") == tostring(raid.id or self.attendanceSelectedRaid)
+        local excluded = linkedToRaid and LV.Loot and LV.Loot.IsLootItemExcluded
+            and LV.Loot:IsLootItemExcluded(guildKey, lootRow)
+        local warbound = linkedToRaid and LV.Loot and LV.Loot.IsWarboundRow
+            and LV.Loot:IsWarboundRow(guildKey, lootRow)
+        if linkedToRaid and lootRow.src ~= "bonus" and not excluded and not warbound then
+            lootRows[#lootRows + 1] = lootRow
+        end
+    end
+    table.sort(lootRows, function(a, b)
+        local aTimestamp = tonumber(a and a.ts) or 0
+        local bTimestamp = tonumber(b and b.ts) or 0
+        if aTimestamp == bTimestamp then
+            return tostring(a and a.id or "") < tostring(b and b.id or "")
+        end
+        return aTimestamp < bTimestamp
+    end)
 
     local scroll, scrollContent = LV.Widgets:ScrollFrame(parent)
     scroll:SetPoint("TOPLEFT", 12, scrollTop)
@@ -2680,24 +2711,80 @@ function LV.UI:RenderAttendanceDetail(parent, guildKey, record)
         end
     end
 
-    local raidInfo = LV.Widgets:Section(scrollContent, "Raid Information", 88)
+    local cardGap = 12
+    local cardHeight = 112
+    local cardWidth = math.floor((availableWidth - cardGap) / 2)
+    local raidInfo = LV.Widgets:Section(scrollContent, "Raid Information", cardHeight)
     raidInfo:SetPoint("TOPLEFT", 0, sectionY)
-    raidInfo:SetPoint("RIGHT", 0, 0)
+    raidInfo:SetWidth(cardWidth)
+    LV.Widgets:ApplyBackdrop(raidInfo, LV.Widgets.colors.canvasAlt, LV.Widgets.colors.transparent)
     local zoneLabel = LV.Widgets:Label(raidInfo, "Zone(s)")
     zoneLabel:SetPoint("TOPLEFT", 12, -38)
     zoneLabel:SetWidth(105)
     local zoneText = LV.Widgets:Text(raidInfo, #zones > 0 and table.concat(zones, ", ") or "Not recorded")
     zoneText:SetPoint("TOPLEFT", 120, -38)
-    zoneText:SetWidth(math.max(300, availableWidth - 138))
+    zoneText:SetWidth(math.max(80, cardWidth - 136))
     zoneText:SetWordWrap(false)
     local bossLabel = LV.Widgets:Label(raidInfo, "Bosses Killed")
-    bossLabel:SetPoint("TOPLEFT", 12, -62)
+    bossLabel:SetPoint("TOPLEFT", 12, -70)
     bossLabel:SetWidth(105)
     local bossText = LV.Widgets:Text(raidInfo, #bosses > 0 and table.concat(bosses, ", ") or "None recorded")
-    bossText:SetPoint("TOPLEFT", 120, -62)
-    bossText:SetWidth(math.max(300, availableWidth - 138))
-    bossText:SetWordWrap(false)
-    sectionY = sectionY - 100
+    bossText:SetPoint("TOPLEFT", 120, -70)
+    bossText:SetWidth(math.max(80, cardWidth - 136))
+    bossText:SetHeight(36)
+    bossText:SetWordWrap(true)
+    bossText:SetJustifyV("TOP")
+
+    local details = LV.Widgets:Section(scrollContent, "Details", cardHeight)
+    details:SetPoint("TOPLEFT", cardWidth + cardGap, sectionY)
+    details:SetWidth(cardWidth)
+    LV.Widgets:ApplyBackdrop(details, LV.Widgets.colors.canvasAlt, LV.Widgets.colors.transparent)
+    local started = tonumber(raid.st) or 0
+    local ended = tonumber(raid.en) or started
+    local duration = math.max(0, math.floor((ended - started) / 60))
+    local activeRaid = record.cur and tostring(record.cur) == tostring(raid.id or self.attendanceSelectedRaid)
+    local timeValue = date("%m/%d/%y %H:%M", started) .. " - "
+        .. (activeRaid and "In progress" or date("%H:%M", ended))
+    if duration > 0 then
+        timeValue = timeValue .. " (" .. tostring(duration) .. " min)"
+    end
+    local playerIDs = {}
+    for _, attendanceMap in ipairs({ hereMap, raid.b or {}, raid.late or {} }) do
+        for playerID in pairs(attendanceMap) do
+            playerIDs[tonumber(playerID) or tostring(playerID)] = true
+        end
+    end
+    local playerCount = self:MapCount(playerIDs)
+    local teamColor = self:RaidTeamColor(guildKey, raid)
+
+    local detailsTime = LV.Widgets:Text(details.header, timeValue)
+    detailsTime:SetPoint("LEFT", details.title, "RIGHT", 12, 0)
+    detailsTime:SetPoint("RIGHT", -10, 0)
+    detailsTime:SetJustifyH("RIGHT")
+    detailsTime:SetWordWrap(false)
+    detailsTime:SetTextColor(unpack(LV.Widgets.colors.muted))
+
+    local detailPadding = 14
+    local detailGap = 18
+    local detailCellWidth = math.floor((cardWidth - (detailPadding * 2) - detailGap) / 2)
+    local rightColumnX = detailPadding + detailCellWidth + detailGap
+    local function addDetailCell(label, value, x, y, valueColor)
+        local labelText = LV.Widgets:Label(details, label .. ":")
+        labelText:SetPoint("TOPLEFT", x, y)
+        labelText:SetWidth(62)
+        local valueText = LV.Widgets:Text(details, tostring(value or ""))
+        valueText:SetPoint("TOPLEFT", x + 66, y)
+        valueText:SetWidth(math.max(30, detailCellWidth - 66))
+        valueText:SetWordWrap(false)
+        if valueColor then
+            valueText:SetTextColor(valueColor.r, valueColor.g, valueColor.b, 1)
+        end
+    end
+    addDetailCell("Tag", self:RaidTeamName(guildKey, raid), detailPadding, -46, teamColor)
+    addDetailCell("Players", playerCount, rightColumnX, -46)
+    addDetailCell("Kills", #(raid.kills or {}), detailPadding, -78)
+    addDetailCell("Loot", #lootRows, rightColumnX, -78)
+    sectionY = sectionY - cardHeight - 12
 
     for _, definition in ipairs(sections) do
         local label, statusKey, statusMap = definition[1], definition[2], definition[3]
@@ -2757,27 +2844,6 @@ function LV.UI:RenderAttendanceDetail(parent, guildKey, record)
 
         sectionY = sectionY - sectionHeight - 12
     end
-
-    local lootRows = {}
-    for _, lootRow in ipairs(record.l or {}) do
-        local linkedToRaid = type(lootRow) == "table"
-            and tostring(lootRow.sid or "") == tostring(raid.id or self.attendanceSelectedRaid)
-        local excluded = linkedToRaid and LV.Loot and LV.Loot.IsLootItemExcluded
-            and LV.Loot:IsLootItemExcluded(guildKey, lootRow)
-        local warbound = linkedToRaid and LV.Loot and LV.Loot.IsWarboundRow
-            and LV.Loot:IsWarboundRow(guildKey, lootRow)
-        if linkedToRaid and lootRow.src ~= "bonus" and not excluded and not warbound then
-            lootRows[#lootRows + 1] = lootRow
-        end
-    end
-    table.sort(lootRows, function(a, b)
-        local aTimestamp = tonumber(a and a.ts) or 0
-        local bTimestamp = tonumber(b and b.ts) or 0
-        if aTimestamp == bTimestamp then
-            return tostring(a and a.id or "") < tostring(b and b.id or "")
-        end
-        return aTimestamp < bTimestamp
-    end)
 
     local lootRowHeight = 24
     local lootSectionHeight = #lootRows > 0 and (58 + (#lootRows * lootRowHeight) + 8) or 72
@@ -2931,14 +2997,7 @@ function LV.UI:MeterDisplayRows(guildRows, pugRows, showPugs)
 end
 
 function LV.UI:MeterAttendancePercent(row, raidCount)
-    local eligibleRaids = tonumber(row and row.eligibleRaids)
-    if eligibleRaids == nil then
-        eligibleRaids = tonumber(raidCount) or 0
-    end
-    if eligibleRaids <= 0 then
-        return 0
-    end
-    return math.floor((((row and row.attended) or 0) * 100 / eligibleRaids) + 0.5)
+    return math.floor((self:AttendanceMeterRate(row, raidCount) * 100) + 0.5)
 end
 
 function LV.UI:StatusLabel(status)
