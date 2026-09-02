@@ -13,15 +13,15 @@
 ## Release checks
 
 - Keep `LootViewer.toc` interface and version metadata aligned with the supported Retail client.
-- Write changelog entries in simple plain English. Use numbered entries rather than hyphen bullets.
+- For each release, write 5-8 numbered changelog entries in simple, direct plain English. Combine related changes, focus on what users will notice, and omit low-level implementation details unless they are essential.
 - Use an increasing prerelease suffix while testing a release locally. Start with `<version>-0`, then increase it for each newly tested revision, for example `12.1.6-0`, `12.1.6-1`, and `12.1.6-2`.
 - Remove the prerelease suffix only when the branch is ready for its final push and deployment. For example, roll `12.1.6-2` into `12.1.6`.
 - Run `./verify.ps1` before committing.
 - Run `./build.ps1` and inspect the resulting `dist/LootViewer-<version>.zip` before publishing.
 - The release archive must contain one top-level `LootViewer/` directory and only TOC/runtime files.
 - Keep the personal `deploy.ps1` local and ignored; it must not be committed or packaged.
-- When the user asks to push changes to Git, use `update_and_push.ps1` instead of running the Git push workflow manually.
-- Do not create or push a release tag unless the user explicitly requests a release. Tags matching `v*` publish through the GitHub Actions packager.
+- When the user says "update and push," treat that as explicit release authorization and run `update_and_push.ps1` with `-Release` so the version commit, main branch, and release tag are all pushed.
+- Do not create or push a release tag for other push requests unless the user explicitly requests a release. Tags matching `v*` publish through the GitHub Actions packager.
 
 ## Local testing
 
