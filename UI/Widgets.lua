@@ -374,12 +374,12 @@ local function updateToggle(check)
     local checked = check:GetChecked() and true or false
     LV.Widgets:ApplyBackdrop(
         check,
-        checked and colors.accentSoft or colors.surfaceRaised,
-        checked and colors.accent or colors.border
+        checked and colors.success or colors.danger,
+        checked and colors.successBorder or colors.dangerBorder
     )
     check.knob:ClearAllPoints()
     check.knob:SetPoint("CENTER", check, "CENTER", checked and 10 or -10, 0)
-    check.knob:SetVertexColor(unpack(checked and colors.accentBright or colors.textSecondary))
+    check.knob:SetVertexColor(unpack(colors.text))
 end
 
 function LV.Widgets:Check(parent, text, onChanged)
@@ -406,8 +406,8 @@ function LV.Widgets:Check(parent, text, onChanged)
         local checked = self:GetChecked() and true or false
         LV.Widgets:ApplyBackdrop(
             self,
-            checked and colors.accentSoft or colors.surfaceHover,
-            checked and colors.accentBright or colors.borderFocus
+            checked and colors.success or colors.danger,
+            checked and colors.text or colors.dangerBorder
         )
         if self.tooltip then
             GameTooltip:SetOwner(self, "ANCHOR_RIGHT")

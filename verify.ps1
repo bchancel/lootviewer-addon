@@ -268,14 +268,14 @@ if ($utilText -notmatch 'NormalizeTimezone' -or
     throw "Per-team time zones or local-only sync exclusion appear incomplete."
 }
 if ($dataSyncText -notmatch 'RELIABLE_PROTOCOL_VERSION\s*=\s*3' -or
-    $dataSyncText -notmatch 'SYNC_PROTOCOL_VERSION\s*=\s*5' -or
+    $dataSyncText -notmatch 'SYNC_PROTOCOL_VERSION\s*=\s*6' -or
     $dataSyncText -notmatch 'function LV\.DataSync:BuildManifest' -or
     $dataSyncText -notmatch 'function LV\.DataSync:RequestSelected' -or
     $dataSyncText -notmatch 'function LV\.DataSync:RelinkOrphanedRaidEvents' -or
     $dataSyncText -notmatch 'function LV\.DataSync:RepairOrphanedRaidEvents' -or
     $dataSyncText -notmatch 'QueueGenericTransfer' -or
     $dataSyncText -notmatch 'raidDataOnly\s*=\s*true' -or
-    $dataSyncText -notmatch '\{\s*"loot",\s*lootCounts\[item\.id\]' -or
+    $dataSyncText -notmatch '\{\s*"loot",\s*lootCounts\[item\.syncID\]' -or
     $dataSyncText -notmatch 'function LV\.DataSync:BeginReturnChunkSend' -or
     $dataSyncText -notmatch 'SendWhisper\("M"' -or
     $dataSyncText -notmatch 'kind\s*==\s*"M"' -or
@@ -302,6 +302,9 @@ if ($storeText -notmatch 'function LV\.Store:TeamRoster' -or
     $raidText -notmatch 'UnitIsConnected' -or
     $raidText -notmatch 'rosterType\s*~=\s*"helper"' -or
     $uiText -notmatch 'function LV\.UI:RenderTeamRoster' -or
+    $uiText -notmatch 'rosterInviteFilterValues' -or
+    $uiText -notmatch 'Invite Team' -or
+    $uiText -notmatch 'teamRosterAltIcon' -or
     $uiText -notmatch 'function LV\.UI:TeamRosterCandidates' -or
     $uiText -notmatch 'function LV\.UI:LiveTeamRosterCandidates' -or
     $uiText -notmatch 'function LV\.UI:ResolvePlayerNameForGuild' -or
@@ -334,6 +337,19 @@ if ($storeText -notmatch 'function LV\.Store:TeamRoster' -or
     $uiText -notmatch '\{\s*"tank",\s*"healer",\s*"melee",\s*"ranged",\s*"helper",\s*"unassigned"\s*\}' -or
     $uiText -notmatch 'rosterType\s*==\s*"helper"\s*and\s*"helper"') {
     throw "Authority-gated per-team roster roles or automatic no-shows appear incomplete."
+}
+if ($raidText -notmatch 'function LV\.Raid:RaidInviteWindow' -or
+    $raidText -notmatch 'function LV\.Raid:StartRosterInvites' -or
+    $raidText -notmatch 'function LV\.Raid:ProcessRosterInviteQueue' -or
+    $raidText -notmatch 'C_PartyInfo\.InviteUnit' -or
+    $raidText -notmatch 'C_PartyInfo\.ConvertToRaid' -or
+    $raidText -notmatch 'ROSTER_INVITE_DELAY' -or
+    $raidText -notmatch 'GroupMemberNames' -or
+    $raidText -notmatch 'Four invites sent' -or
+    $uiText -notmatch 'Raiders\+' -or
+    $uiText -notmatch 'Trials\+' -or
+    $uiText -notmatch 'Helpers\+') {
+    throw "Scheduled filtered team invites, invite pacing, duplicate checks, or raid conversion appear incomplete."
 }
 if ($dataSyncText -notmatch 'line\("XI"' -or
     $dataSyncText -notmatch 'function LV\.DataSync:ImportLootItemExclusion' -or
@@ -553,6 +569,31 @@ if ($seasonText -notmatch 'DungeonFilterValues' -or
     $uiText -notmatch 'Raid hours:' -or
     $uiText -notmatch 'iconOnly') {
     throw "Dungeon distribution/search filters, raid detail context, or the formatted Recent loot table appears incomplete."
+}
+if ($dataSyncText -notmatch 'function LV\.DataSync:RaidIdentity' -or
+    $dataSyncText -notmatch 'normalizedRaidDay' -or
+    $dataSyncText -notmatch 'function LV\.DataSync:NormalizeLegacyRaidIDs' -or
+    $dataSyncText -notmatch 'record\.mig\.rid\s*=\s*RAID_ID_MIGRATION_VERSION' -or
+    $dataSyncText -notmatch 'row\.sid\s*=\s*canonicalID' -or
+    $dataSyncText -notmatch 'raidContentSignature' -or
+    $dataSyncText -notmatch 'local function countsEqual' -or
+    $dataSyncText -notmatch 'remote\.signature\s*~=\s*localEntry\.signature' -or
+    $dataSyncText -notmatch 'mergeNames\(kill\.p' -or
+    $raidText -notmatch 'cid\s*=\s*canonicalRaidID' -or
+    $uiText -notmatch 'return not LV\.Store:IsGlobalPugTeam\(raidTeamID\)' -or
+    $uiText -notmatch 'lootByRaid' -or
+    $uiText -notmatch '\{\s*"MIA",\s*426' -or
+    $uiText -notmatch 'optionsHeader:SetPoint\("TOPRIGHT"' -or
+    $uiText -notmatch 'raidType:SetPoint\("RIGHT",\s*-78' -or
+    $historyMeterText -notmatch 'dungeonOnlyBonusRolls' -or
+    $historyMeterText -notmatch 'Only Bonus Rolls' -or
+    $widgetsText -notmatch 'checked and colors\.success or colors\.danger') {
+    throw "Normalized record-level raid sync or the requested raid/dungeon history controls appear incomplete."
+}
+if ($optionsText -notmatch 'Delete Raid Team\?' -or
+    $optionsText -notmatch 'Existing raid history keeps its team tag' -or
+    $uiText -notmatch 'teamConfigLayer:GetFrameLevel') {
+    throw "Raid-team deletion confirmation or foreground modal layering appears incomplete."
 }
 if ($tradeText -notmatch 'RecordManualTrade' -or
     $tradeText -notmatch 'normalizeTradePartyName' -or

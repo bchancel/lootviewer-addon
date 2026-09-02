@@ -117,6 +117,13 @@ local teamRosterTypeValues = {
     { value = "social", label = "Social" },
 }
 
+local rosterInviteFilterValues = {
+    { value = "raiders", label = "Raiders+" },
+    { value = "trials", label = "Trials+" },
+    { value = "helpers", label = "Helpers+" },
+    { value = "all", label = "All" },
+}
+
 local teamRosterTypeLabels = {
     raider = "Raider",
     trial = "Trial",
@@ -720,6 +727,12 @@ function LV.UI:ShowConfirmationDialog(options)
     end
 
     local dialog = layer.dialog
+    local frameLevel = self.frame:GetFrameLevel() + 410
+    if self.teamConfigLayer and self.teamConfigLayer:IsShown() then
+        frameLevel = math.max(frameLevel, self.teamConfigLayer:GetFrameLevel() + 10)
+    end
+    layer:SetFrameLevel(frameLevel)
+    dialog:SetFrameLevel(frameLevel + 1)
     layer.onAccept = options.onAccept
     dialog.title:SetText(options.title or "Confirm")
     dialog.message:SetText(options.message or "Are you sure?")
@@ -1025,11 +1038,8 @@ end
 function LV.UI:EventMatchesRaidTag(record, row, teamID, excludePugsFromAll)
     local raid = type(record) == "table" and type(record.r) == "table" and row and row.sid and record.r[row.sid]
     if teamID == nil or teamID == "all" then
-        if excludePugsFromAll then
-            local raidTeamID = type(raid) == "table" and raid.team or (row and row.rt)
-            return not LV.Store:IsGlobalPugTeam(raidTeamID)
-        end
-        return true
+        local raidTeamID = type(raid) == "table" and raid.team or (row and row.rt)
+        return not LV.Store:IsGlobalPugTeam(raidTeamID)
     end
     return self:RaidMatchesTag(raid, teamID)
         or (type(raid) ~= "table" and row and tostring(row.rt or "") == tostring(teamID))
@@ -1961,11 +1971,72 @@ function LV.UI:RenderTeamRoster()
         previousTab = tab
     end
 
+    local inviteWindow = LV.Raid and LV.Raid.RaidInviteWindow and LV.Raid:RaidInviteWindow(team)
+    local panelsTop = -150
+    local rosterPanelHeight = 242
+    if inviteWindow then
+        local invitePanel = LV.Widgets:Section(self.content, "Invite Team", 62)
+        invitePanel:SetPoint("TOPLEFT", 24, -150)
+        invitePanel:SetWidth(availableWidth)
+
+        self.rosterInviteFilters = self.rosterInviteFilters or {}
+        local selectedInviteFilter = self.rosterInviteFilters[team.id] or "raiders"
+        local minutesUntil = math.ceil(((tonumber(inviteWindow.scheduledStartAt) or LV.Util:ServerNow())
+            - LV.Util:ServerNow()) / 60)
+        local timingText = minutesUntil > 0 and ("Starts in " .. tostring(minutesUntil) .. " min") or "Raid in progress"
+        local inviteHint = LV.Widgets:Text(invitePanel, timingText)
+        inviteHint:SetPoint("TOPLEFT", 12, -42)
+        inviteHint:SetWidth(112)
+        inviteHint:SetWordWrap(false)
+        inviteHint:SetTextColor(unpack(LV.Widgets.colors.navigation))
+
+        local inviteFilter = LV.Widgets:Dropdown(invitePanel, rosterInviteFilterValues, function()
+            return self.rosterInviteFilters[team.id] or "raiders"
+        end, function(value)
+            self.rosterInviteFilters[team.id] = value
+            self:Refresh()
+        end, 118)
+        inviteFilter:SetPoint("TOPLEFT", 136, -36)
+        LV.Widgets:SetTooltip(inviteFilter,
+            "Raiders+ invites Raiders. Trials+ also includes Trials. Helpers+ also includes Helpers. All includes Socials.")
+
+        local inviteActive = LV.Raid:IsRosterInviteActive()
+        local canInvite = LV.Raid:CanInviteRoster()
+        local invite = LV.Widgets:Button(invitePanel, "Invite", 88, 26, function()
+            local filter = self.rosterInviteFilters[team.id] or selectedInviteFilter
+            local ok, result = LV.Raid:StartRosterInvites(guildInfo.key, team.id, filter)
+            if not ok then
+                LV:Print(result or "Unable to invite the roster.")
+            end
+            self:Refresh()
+        end, "success")
+        invite:SetPoint("LEFT", inviteFilter, "RIGHT", 10, 0)
+        invite:SetEnabled(canInvite and not inviteActive)
+        LV.Widgets:SetTooltip(invite, canInvite
+            and "Invites matching roster players who are not already in your party or raid."
+            or "You must be the group leader or an assistant to invite players.")
+
+        local candidates = LV.Raid:RosterInviteCandidates(guildInfo.key, team.id, selectedInviteFilter)
+        local statusText = tostring(#candidates) .. " roster player(s) match this filter."
+        if LV.Raid.inviteQueue and tostring(LV.Raid.inviteQueue.teamID) == tostring(team.id) then
+            statusText = LV.Raid.inviteQueue.status or statusText
+        elseif LV.Raid.lastInviteStatus and tostring(LV.Raid.lastInviteStatus.teamID) == tostring(team.id) then
+            statusText = LV.Raid.lastInviteStatus.text or statusText
+        end
+        local status = LV.Widgets:Text(invitePanel, statusText)
+        status:SetPoint("LEFT", invite, "RIGHT", 12, 0)
+        status:SetPoint("RIGHT", -12, 0)
+        status:SetWordWrap(false)
+        status:SetTextColor(unpack(LV.Widgets.colors.muted))
+
+        panelsTop = -226
+        rosterPanelHeight = 218
+    end
+
     local gap = 16
     local panelWidth = math.floor((availableWidth - gap) / 2)
-    local rosterPanelHeight = 242
     local leftPanel = LV.Widgets:Section(self.content, canManageRoster and "Add Player" or "Roster Access", rosterPanelHeight)
-    leftPanel:SetPoint("TOPLEFT", 24, -150)
+    leftPanel:SetPoint("TOPLEFT", 24, panelsTop)
     leftPanel:SetWidth(panelWidth)
     local rightPanel = LV.Widgets:Section(self.content, "Selected Player", rosterPanelHeight)
     rightPanel:SetPoint("TOPLEFT", leftPanel, "TOPRIGHT", gap, 0)
@@ -2276,7 +2347,7 @@ function LV.UI:RenderTeamRoster()
     end
 
     local scroll, rosterContent = LV.Widgets:ScrollFrame(self.content)
-    scroll:SetPoint("TOPLEFT", 24, -(150 + rosterPanelHeight + 16))
+    scroll:SetPoint("TOPLEFT", 24, -(math.abs(panelsTop) + rosterPanelHeight + 16))
     scroll:SetPoint("BOTTOMRIGHT", -24, 20)
     local contentWidth = math.max(720, availableWidth - 28)
     rosterContent:SetWidth(contentWidth)
@@ -2320,18 +2391,28 @@ function LV.UI:RenderTeamRoster()
             for index, entry in ipairs(entries) do
                 local column = (index - 1) % columnCount
                 local rowIndex = math.floor((index - 1) / columnCount)
+                local rosterType = entry.assignment.t or "raider"
+                local rosterIcon = teamRosterTypeIcons[rosterType]
+                local iconTooltip = "Roster status: " .. (teamRosterTypeLabels[rosterType] or "Raider")
+                local rosterTag, mainID = LV.Guild:InferRosterTag(guildInfo.key, entry.id)
+                if rosterTag == "alt" then
+                    local mainName = LV.Store:DictionaryValue(guildInfo.key, "n", mainID)
+                    rosterIcon = teamRosterAltIcon
+                    iconTooltip = "Roster alt" .. (mainName ~= "" and (" of " .. LV.Util:ShortName(mainName)) or "")
+                end
                 local button = self:CreatePlayerListCell(section, guildInfo.key, entry.id, entry.name,
                     cellWidth - 8, rowIndex, function()
                     self.rosterSelectedNameID = entry.id
                     self.rosterCandidateID = entry.id
                     self.rosterSearch = entry.fullName
                     self:Refresh()
-                end)
+                end, rosterIcon)
                 button:SetPoint("TOPLEFT", 4 + (column * cellWidth), -36 - (rowIndex * 26))
                 local secondaryLabel = entry.assignment.s and teamRosterRoleLabels[entry.assignment.s] or nil
                 local rosterTypeLabel = teamRosterTypeLabels[entry.assignment.t or "raider"] or "Raider"
                 LV.Widgets:SetTooltip(button, entry.fullName
                     .. "\nType: " .. rosterTypeLabel
+                    .. "\n" .. iconTooltip
                     .. (secondaryLabel and ("\nSecondary: " .. secondaryLabel:gsub("s$", "")) or ""))
             end
         end
@@ -2433,22 +2514,37 @@ function LV.UI:RenderAttendanceHistory(parent, guildKey, record)
     count:SetTextColor(unpack(LV.Widgets.colors.muted))
     count:SetPoint("RIGHT", -18, 0)
 
+    local lootByRaid = {}
+    for _, loot in ipairs(record.l or {}) do
+        if type(loot) == "table" and loot.sid
+            and not (LV.Loot and LV.Loot.IsWarboundRow and LV.Loot:IsWarboundRow(guildKey, loot)) then
+            lootByRaid[tostring(loot.sid)] = (lootByRaid[tostring(loot.sid)] or 0) + 1
+        end
+    end
     local headers = {
-        { "Date", 24 },
-        { "Tag", 124 },
-        { "Here", 218 },
-        { "Standby", 266 },
-        { "Late", 322 },
-        { "Out", 374 },
-        { "NoShow", 426 },
-        { "Kills", 498 },
-        { "Type", 540 },
-        { "Options", 596 },
+        { "Date", 24, 92 },
+        { "Tag", 124, 84 },
+        { "Here", 218, 38 },
+        { "Standby", 266, 50 },
+        { "Late", 322, 36 },
+        { "Out", 374, 34 },
+        { "MIA", 426, 38 },
+        { "Kills", 480, 38 },
+        { "Loot", 526, 38 },
+        { "Type", 574, 90 },
     }
     for _, header in ipairs(headers) do
         local label = LV.Widgets:Label(parent, header[1])
         label:SetPoint("TOPLEFT", header[2], -48)
+        label:SetWidth(header[3])
+        label:SetJustifyH(header[4] or "LEFT")
+        label:SetWordWrap(false)
     end
+    local optionsHeader = LV.Widgets:Label(parent, "Options")
+    optionsHeader:SetPoint("TOPRIGHT", -24, -48)
+    optionsHeader:SetWidth(72)
+    optionsHeader:SetJustifyH("RIGHT")
+    optionsHeader:SetWordWrap(false)
 
     if #rows == 0 then
         local empty = LV.Widgets:Text(parent, "No tracked raid attendance yet.")
@@ -2513,10 +2609,12 @@ function LV.UI:RenderAttendanceHistory(parent, guildKey, record)
         local noshow = LV.Widgets:Text(rowButton, tostring(self:MapCount(raid.noshow)))
         noshow:SetPoint("LEFT", 410, 0)
         local kills = LV.Widgets:Text(rowButton, tostring(#(raid.kills or {})))
-        kills:SetPoint("LEFT", 482, 0)
+        kills:SetPoint("LEFT", 464, 0)
+        local loot = LV.Widgets:Text(rowButton, tostring(lootByRaid[tostring(row.id)] or 0))
+        loot:SetPoint("LEFT", 510, 0)
         local raidType = LV.Widgets:Text(rowButton, raid.adhoc and "adhoc" or (raid.reason or "raid"))
-        raidType:SetPoint("LEFT", 524, 0)
-        raidType:SetWidth(58)
+        raidType:SetPoint("LEFT", 558, 0)
+        raidType:SetPoint("RIGHT", -78, 0)
         raidType:SetWordWrap(false)
         if active then
             raidType:SetTextColor(unpack(LV.Widgets.colors.yellow))

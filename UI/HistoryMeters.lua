@@ -195,13 +195,15 @@ end
 function LV.UI:FilteredDungeonLootRows()
     local allRows, record, runs = self:DungeonLootRows()
     local query = LV.Util:Trim(self.dungeonHistorySearch or ""):lower()
-    if query == "" then
+    local onlyBonus = self.dungeonOnlyBonusRolls == true
+    if query == "" and not onlyBonus then
         return allRows, record, runs, #allRows
     end
 
     local rows = {}
     for _, row in ipairs(allRows) do
-        if self:DungeonLootSearchText(row, runs):find(query, 1, true) then
+        if (not onlyBonus or row.src == "bonus")
+            and (query == "" or self:DungeonLootSearchText(row, runs):find(query, 1, true)) then
             rows[#rows + 1] = row
         end
     end
@@ -444,7 +446,8 @@ end
 function LV.UI:RenderDungeonRecent(parent)
     local rows, record, runs, total = self:FilteredDungeonLootRows()
     local searchText = LV.Util:Trim(self.dungeonHistorySearch or "")
-    local countText = searchText ~= ""
+    local filtered = searchText ~= "" or self.dungeonOnlyBonusRolls == true
+    local countText = filtered
         and (tostring(#rows) .. " of " .. tostring(total) .. " item(s)")
         or (tostring(total) .. " item(s)")
     local count = LV.Widgets:Text(parent.header, countText)
@@ -457,7 +460,7 @@ function LV.UI:RenderDungeonRecent(parent)
     self:CreateHistoryColumnHeader(parent, "M+", 562, 34)
     self:CreateHistoryColumnHeader(parent, "Source / Loot Spec", 606, 130)
     if #rows == 0 then
-        local message = searchText ~= ""
+        local message = filtered
             and "No dungeon gear matches your search."
             or "No dungeon gear recorded for this season yet."
         local empty = LV.Widgets:Text(parent, message)
@@ -622,6 +625,9 @@ function LV.UI:RenderDungeonHistory()
     self.dungeonMinTrack = self.dungeonMinTrack or savedMinTrack
     self.dungeonMinTrack = dungeonTrackRank[self.dungeonMinTrack] and self.dungeonMinTrack or "champion"
     self:SetHistoryFilterPreference("dungeonMinTrack", self.dungeonMinTrack)
+    if self.dungeonOnlyBonusRolls == nil then
+        self.dungeonOnlyBonusRolls = self:HistoryFilterPreference("dungeonOnlyBonusRolls", false) == true
+    end
     local dungeonValues = LV.Seasons:DungeonFilterValues(self:SelectedSeasonFilter())
     self.dungeonHistoryFilter = self.dungeonHistoryFilter or "all"
     local validDungeonFilter = false
@@ -656,6 +662,13 @@ function LV.UI:RenderDungeonHistory()
         contentTop = -238
     else
         self:CreateHistorySearch(self.content, "dungeonHistorySearch", 24, -139)
+        local onlyBonus = LV.Widgets:Check(self.content, "Only Bonus Rolls", function(value)
+            self.dungeonOnlyBonusRolls = value
+            self:SetHistoryFilterPreference("dungeonOnlyBonusRolls", value)
+            self:Refresh()
+        end)
+        onlyBonus:SetPoint("TOPLEFT", 438, -136)
+        onlyBonus:SetChecked(self.dungeonOnlyBonusRolls)
     end
     local panel = LV.Widgets:Section(self.content, self.historyView == "distribution" and "Gear by Final Owner" or "Dungeon Gear", 440)
     panel:SetPoint("TOPLEFT", 22, contentTop)

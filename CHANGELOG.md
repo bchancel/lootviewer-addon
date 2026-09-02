@@ -1,5 +1,16 @@
 # Changelog
 
+## 12.1.10 - 2026-09-02
+
+1. Raid sync now recognizes the same raid across different players and imports only missing attendance, kills, loot, and trades.
+2. Existing raid IDs are automatically normalized once, with linked attendance, loot, and trades preserved.
+3. Added scheduled roster invites with filters for Raiders, Trials, Helpers, or everyone.
+4. Roster invites skip grouped players, pace invite requests, and convert parties to raids when needed.
+5. Added roster-status and alt icons to the team roster page.
+6. Raid and loot history now exclude Pugs when All Raid Tags is selected.
+7. Improved Raid Nights with MIA and Loot columns, a wider Type column, and better column ordering.
+8. Added team-deletion confirmation, bonus-roll filtering for dungeon loot, and clearer red/green toggle colors.
+
 ## 12.1.9 - 2026-08-28
 
 1. Raid Nights now uses a scrollable list instead of page buttons.

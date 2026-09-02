@@ -10,8 +10,11 @@ Retail targets: WoW `12.1.0` and `12.0.7` / interfaces `120100, 120007`.
 - Captures loot and follow-up trades while preserving stable event identities.
 - Supports separate raid teams and visual 30-minute start/end schedules within one guild, with per-team portable time zones, optional 24-hour labels, and local-only sync exclusion.
 - Adds authority-managed per-team rosters with Raider, Trial, and Helper types plus class and combat roles, live group, loaded guild, raid-history, and manual Name-Realm search, automatic roster distribution, and automatic no-shows for missing Raiders and Trials.
+- Shows a scheduled team-invite panel on the roster page from 30 minutes before raid time through the raid, with cumulative roster-type filters, duplicate-group checks, paced invites, and automatic raid conversion for larger groups.
+- Reuses Raider, Trial, Helper, Social, and Alt status icons on roster player cards.
 - Includes a reserved account-wide Pugs team in every raid-team selector; it has a fixed `#C5C6C7` color, no schedule or configuration, and never syncs.
 - Allows any player to start Pugs tracking regardless of guild authority, with an optional account-wide auto-start for current-tier pug raids outside configured raid hours.
+- Gives each guild raid night a deterministic sync identity, migrates legacy raid keys once, and merges missing attendance, boss kills, loot, and trades at the record level.
 - Allows guild officers to publish a `LootViewer Authority:` directive in Guild Information that locks the effective Lead/Assist, Raid Lead, Anyone, or Trusted rank policy without replacing members' local fallback settings.
 - Filters Raid History and raid-linked Loot History data by raid tag.
 - Provides a Loot History minimum-difficulty slider from LFR through Mythic, with gray LFR and stacked Normal, Heroic, and Mythic distribution segments.
@@ -28,6 +31,7 @@ Retail targets: WoW `12.1.0` and `12.0.7` / interfaces `120100, 120007`.
 - Optionally records Midnight Season 2 Mythic+ end-of-run gear, Mythic 0 boss gear, and bonus-roll loot with the active loot specialization.
 - Shows raid and dungeon loot distribution as clickable Normal/Heroic/Mythic or Champion/Hero/Myth stacked meters using the final owner after trades.
 - Filters dungeon distribution by minimum Champion/Heroic/Bonus Roll track and by any individual dungeon in the selected season.
+- Filters Dungeon Recent history to bonus rolls only and combines that toggle with character or item searches.
 - Shows recorded zones and defeated bosses in each Raid History attendance detail.
 - Keeps Recent Loot History readable with aligned responsive columns, full raid-hour date tooltips, and compact method icons.
 - Offers per-item Recent loot options for recording a manual trade to another raid participant or excluding the item.

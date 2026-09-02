@@ -25,7 +25,11 @@ non-Raid-Finder raid content outside all configured team schedule windows.
     ui = {
       context = "raid:midnight-2",
       window = {},
-      lootFilters = { raidMinDifficulty = "lfr", dungeonMinTrack = "champion" },
+      lootFilters = {
+        raidMinDifficulty = "lfr",
+        dungeonMinTrack = "champion",
+        dungeonOnlyBonusRolls = false,
+      },
     },
   },
   g = {},
@@ -48,6 +52,7 @@ us:sargeras:sanctimonious
 ```lua
 {
   v = 2,
+  mig = { rid = 1 },
   cfg = {
     enabled = true,
     prompt = true,
@@ -119,7 +124,8 @@ so newer authoritative addon snapshots replace older cached copies safely.
 
 ```lua
 {
-  id = "r1",
+  id = "rs20601-7a3f4b2c",
+  cid = "rs20601-7a3f4b2c",
   st = 1780000000,
   sst = 1780000400,
   set = 1780011200,
@@ -150,6 +156,15 @@ so newer authoritative addon snapshots replace older cached copies safely.
 }
 ```
 
+`cid` is the deterministic guild raid identity used by sync. It is derived from
+the guild, raid tag, and normalized raid day, so clients that start tracking a
+few minutes apart independently produce the same value. On the first login
+after this format is installed, `mig.rid` records a one-time migration that
+rekeys older guild raids to `cid`, merges records with the same normalized ID,
+and updates linked loot and trade `sid` values plus the active `cur` reference.
+Attendance and boss kills are embedded in each raid and are merged with it.
+Local Pugs raids are excluded from this migration because they never sync.
+
 `st` records when tracking began. For a scheduled raid, `sst` and `set` record
 the scheduled start and end instants. `sst` anchors `lateGrace`; inviting or
 starting tracking early does not consume the grace period. Tracking stops at
@@ -166,7 +181,7 @@ instance ID/name and, as a final fallback, their start date.
 {
   id = "l1",
   ts = 1780001210,
-  sid = "r1",
+  sid = "rs20601-7a3f4b2c",
   e = 3131,
   iid = 9999,
   inst = 1,
@@ -192,7 +207,7 @@ instance ID/name and, as a final fallback, their start date.
 {
   id = "t1",
   ts = 1780001800,
-  sid = "r1",
+  sid = "rs20601-7a3f4b2c",
   f = 1,
   to = 2,
   item = 1,

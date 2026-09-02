@@ -13,6 +13,21 @@ LV.Raid.remoteRaidLoggers = {}
 
 local AUTO_START_ELECTION_SECONDS = 2
 local REMOTE_LOGGER_FRESH_SECONDS = 10
+local ROSTER_INVITE_DELAY = 0.50
+
+local rosterInviteTypeRank = {
+    raider = 1,
+    trial = 2,
+    helper = 3,
+    social = 4,
+}
+
+local rosterInviteFilterRank = {
+    raiders = 1,
+    trials = 2,
+    helpers = 3,
+    all = 4,
+}
 
 local function listKeys(map)
     local out = {}
@@ -99,6 +114,236 @@ local function normalizeAdHocHours(hours)
         hours = 12
     end
     return hours
+end
+
+local function refreshRosterUI()
+    if LV.UI and LV.UI.frame and LV.UI.frame:IsShown() and LV.UI.currentTab == "roster" then
+        LV.UI:Refresh()
+    end
+end
+
+function LV.Raid:RaidInviteWindow(team)
+    if type(team) ~= "table" then
+        return nil
+    end
+    local currentMinute = teamWeekMinute(team)
+    for slotIndex, slot in ipairs(team.schedules or {}) do
+        local weekday = tonumber(slot.w)
+        local hour = tonumber(slot.h) or 20
+        local minute = tonumber(slot.m) or 0
+        local duration = tonumber(slot.d) or 180
+        if weekday then
+            local startMinute = ((weekday - 1) * 24 * 60) + (hour * 60) + minute
+            local active, matchedStart = inWeeklyWindow(currentMinute, startMinute, 30, duration, 0)
+            if active then
+                return {
+                    slotIndex = slotIndex,
+                    startMinute = matchedStart,
+                    endMinute = matchedStart + duration,
+                    currentMinute = currentMinute,
+                    scheduledStartAt = scheduledServerTimestamp(matchedStart, currentMinute),
+                    scheduledEndAt = scheduledServerTimestamp(matchedStart + duration, currentMinute),
+                }
+            end
+        end
+    end
+    return nil
+end
+
+function LV.Raid:CanInviteRoster()
+    if not IsInGroup() then
+        return true
+    end
+    if C_PartyInfo and type(C_PartyInfo.CanInvite) == "function" then
+        local ok, canInvite = pcall(C_PartyInfo.CanInvite)
+        if ok then
+            return canInvite == true
+        end
+    end
+    return UnitIsGroupLeader("player") or UnitIsGroupAssistant("player")
+end
+
+function LV.Raid:RosterInviteCandidates(guildKey, teamID, filter)
+    local roster = LV.Store:TeamRoster(guildKey, teamID) or {}
+    local maximumRank = rosterInviteFilterRank[filter or "raiders"] or 1
+    local candidates = {}
+    for nameID, assignment in pairs(roster) do
+        local rosterType = type(assignment) == "table" and tostring(assignment.t or "raider"):lower() or "raider"
+        if (rosterInviteTypeRank[rosterType] or 1) <= maximumRank then
+            local fullName = LV.Store:DictionaryValue(guildKey, "n", nameID)
+            if LV.Util:Trim(fullName) ~= "" then
+                candidates[#candidates + 1] = fullName
+            end
+        end
+    end
+    table.sort(candidates, function(left, right)
+        return left:lower() < right:lower()
+    end)
+    return candidates
+end
+
+function LV.Raid:GroupMemberNames()
+    local names = {}
+    local function include(unit)
+        if UnitExists(unit) then
+            local fullName = LV.Util:UnitFullName(unit)
+            if fullName and fullName ~= "" then
+                names[fullName:lower()] = true
+                names[LV.Util:ShortName(fullName):lower()] = true
+            end
+        end
+    end
+    include("player")
+    if IsInRaid() then
+        for index = 1, (tonumber(GetNumGroupMembers()) or 0) do
+            include("raid" .. tostring(index))
+        end
+    elseif IsInGroup() then
+        for index = 1, (tonumber(GetNumSubgroupMembers()) or 0) do
+            include("party" .. tostring(index))
+        end
+    end
+    return names
+end
+
+function LV.Raid:IsRosterInviteActive(teamID)
+    return type(self.inviteQueue) == "table"
+        and (teamID == nil or tostring(self.inviteQueue.teamID) == tostring(teamID))
+end
+
+function LV.Raid:FinishRosterInvites(message)
+    local queue = self.inviteQueue
+    if not queue then
+        return
+    end
+    queue.status = message or ("Sent " .. tostring(queue.sent or 0) .. " roster invite(s).")
+    self.lastInviteStatus = {
+        teamID = queue.teamID,
+        text = queue.status,
+        finishedAt = LV.Util:Now(),
+    }
+    self.inviteQueue = nil
+    LV:Print(queue.status)
+    refreshRosterUI()
+end
+
+function LV.Raid:ProcessRosterInviteQueue()
+    local queue = self.inviteQueue
+    if type(queue) ~= "table" then
+        return
+    end
+    if not self:CanInviteRoster() then
+        self:FinishRosterInvites("Roster invites stopped because you can no longer invite to the group.")
+        return
+    end
+
+    if queue.requiresRaid and not IsInRaid() then
+        if IsInGroup() then
+            if not queue.conversionRequested then
+                queue.conversionAttempts = (tonumber(queue.conversionAttempts) or 0) + 1
+                if queue.conversionAttempts > 3 then
+                    self:FinishRosterInvites("Roster invites paused because the party could not be converted to a raid. Convert it manually and try again.")
+                    return
+                end
+                local convert = C_PartyInfo and C_PartyInfo.ConvertToRaid or ConvertToRaid
+                if type(convert) ~= "function" then
+                    self:FinishRosterInvites("Roster invites stopped because the party could not be converted to a raid.")
+                    return
+                end
+                queue.conversionRequested = true
+                queue.status = "Converting the party to a raid before continuing invites..."
+                pcall(convert)
+                refreshRosterUI()
+                C_Timer.After(1, function()
+                    if LV.Raid.inviteQueue == queue and not IsInRaid() then
+                        queue.conversionRequested = nil
+                        LV.Raid:ProcessRosterInviteQueue()
+                    end
+                end)
+            end
+            return
+        elseif (tonumber(queue.sent) or 0) >= 4 then
+            queue.status = "Four invites sent. Waiting for someone to join before converting to a raid..."
+            refreshRosterUI()
+            return
+        end
+    end
+
+    local groupNames = self:GroupMemberNames()
+    while #queue.names > 0 do
+        local fullName = table.remove(queue.names, 1)
+        local lowerName = fullName:lower()
+        if groupNames[lowerName] or groupNames[LV.Util:ShortName(fullName):lower()] then
+            queue.skipped = (tonumber(queue.skipped) or 0) + 1
+        else
+            local invite = C_PartyInfo and C_PartyInfo.InviteUnit or InviteUnit
+            if type(invite) ~= "function" then
+                self:FinishRosterInvites("Roster invites stopped because the Retail invite API is unavailable.")
+                return
+            end
+            pcall(invite, fullName)
+            queue.sent = (tonumber(queue.sent) or 0) + 1
+            queue.status = "Sent " .. tostring(queue.sent) .. " of " .. tostring(queue.total)
+                .. " roster invite(s)..."
+            C_Timer.After(ROSTER_INVITE_DELAY, function()
+                if LV.Raid.inviteQueue == queue then
+                    LV.Raid:ProcessRosterInviteQueue()
+                end
+            end)
+            return
+        end
+    end
+
+    local message = "Sent " .. tostring(queue.sent or 0) .. " roster invite(s)"
+    if (tonumber(queue.skipped) or 0) > 0 then
+        message = message .. "; skipped " .. tostring(queue.skipped) .. " already grouped player(s)"
+    end
+    self:FinishRosterInvites(message .. ".")
+end
+
+function LV.Raid:StartRosterInvites(guildKey, teamID, filter)
+    if self.inviteQueue then
+        return false, "A roster invite batch is already running."
+    end
+    local record = LV.Store:GuildRecord(guildKey)
+    local team = record and LV.Store:GetTeamByID(record, teamID)
+    if not team or not self:RaidInviteWindow(team) then
+        return false, "Team invites are available from 30 minutes before raid time until the raid ends."
+    end
+    if not self:CanInviteRoster() then
+        return false, "You must be the group leader or an assistant to invite the roster."
+    end
+    local candidates = self:RosterInviteCandidates(guildKey, teamID, filter)
+    if #candidates == 0 then
+        return false, "No players match that roster filter."
+    end
+    local groupNames = self:GroupMemberNames()
+    local names = {}
+    local skipped = 0
+    for _, fullName in ipairs(candidates) do
+        if groupNames[fullName:lower()] or groupNames[LV.Util:ShortName(fullName):lower()] then
+            skipped = skipped + 1
+        else
+            names[#names + 1] = fullName
+        end
+    end
+    if #names == 0 then
+        return false, "Everyone matching that roster filter is already in your group."
+    end
+    local currentGroupSize = IsInGroup() and (tonumber(GetNumGroupMembers()) or 1) or 1
+    self.inviteQueue = {
+        guildKey = guildKey,
+        teamID = teamID,
+        filter = filter,
+        names = names,
+        total = #names,
+        sent = 0,
+        skipped = skipped,
+        requiresRaid = currentGroupSize + #names > 5,
+        status = "Preparing " .. tostring(#names) .. " roster invite(s)...",
+    }
+    self:ProcessRosterInviteQueue()
+    return true, #names
 end
 
 function LV.Raid:EnsureAttendanceMaps(session)
@@ -687,14 +932,26 @@ function LV.Raid:StartSession(reason, teamID, options)
         and LV.Util:ServerNow() >= scheduledEnd + ((tonumber(record.cfg.endGrace) or 0) * 60) then
         return nil
     end
-    local raidID = LV.Store:NewID(record, "raid", "r")
+    local startedAt = LV.Util:Now()
+    local identityFields = {
+        st = startedAt,
+        sst = scheduledStart,
+        team = team and team.id or "main",
+    }
+    local canonicalRaidID = not isPugTeam and LV.DataSync and LV.DataSync.RaidIdentity
+        and LV.DataSync:RaidIdentity(guildInfo.key, identityFields) or nil
+    local raidID = canonicalRaidID
+    if not raidID or record.r[raidID] ~= nil then
+        raidID = LV.Store:NewID(record, "raid", "r")
+    end
     local playerID = LV.Store:NameID(guildInfo.key, LV.Util:PlayerFullName())
     local session = {
         id = raidID,
-        st = LV.Util:Now(),
+        cid = canonicalRaidID,
+        st = startedAt,
         sst = scheduledStart,
         set = scheduledEnd,
-        en = LV.Util:Now(),
+        en = startedAt,
         z = inRaidInstance and LV.Store:StringID(guildInfo.key, instance.name) or nil,
         iid = inRaidInstance and instance.instanceID or 0,
         diff = inRaidInstance and LV.Store:StringID(guildInfo.key, instance.difficultyName) or nil,
@@ -1386,6 +1643,7 @@ end)
 
 LV:RegisterEvent("GROUP_ROSTER_UPDATE", function()
     C_Timer.After(1, function()
+        LV.Raid:ProcessRosterInviteQueue()
         LV.Raid:MaybeAutoStartScheduled()
         LV.Raid:MaybeAutoStartPug()
         LV.Raid:RecordRaidRoster("roster")

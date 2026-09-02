@@ -8,7 +8,8 @@ local SEND_DELAY = 0.25
 local RETRY_DELAY = 1.5
 local SYNC_WINDOW_SECONDS = 60 * 86400
 local RELIABLE_PROTOCOL_VERSION = 3
-local SYNC_PROTOCOL_VERSION = 5
+local SYNC_PROTOCOL_VERSION = 6
+local RAID_ID_MIGRATION_VERSION = 1
 local EXCLUDED_REMOTE_RAID = {}
 
 local syncKinds = {
@@ -191,6 +192,40 @@ local function raidAttendanceCount(raid)
     return countMap(ids)
 end
 
+local function stableHash(value)
+    local hash = 5381
+    value = tostring(value or "")
+    for index = 1, #value do
+        hash = ((hash * 33) + string.byte(value, index)) % 2147483647
+    end
+    return string.format("%x", hash)
+end
+
+local function normalizedRaidDay(timestamp)
+    -- Noon UTC keeps normal evening starts together even when clients begin a
+    -- few minutes apart on opposite sides of midnight UTC.
+    return math.floor(((tonumber(timestamp) or LV.Util:Now()) - (12 * 60 * 60)) / 86400)
+end
+
+local function calculatedRaidIdentity(guildKey, raid)
+    local teamID = tostring((raid and raid.team) or "main"):lower()
+    local anchor = tonumber(raid and raid.sst) or tonumber(raid and raid.st) or LV.Util:Now()
+    return "rs" .. tostring(normalizedRaidDay(anchor)) .. "-"
+        .. stableHash(tostring(guildKey or "") .. "|" .. teamID)
+end
+
+function LV.DataSync:RaidIdentity(guildKey, raid)
+    if type(raid) ~= "table" then
+        return nil
+    end
+    local existing = tostring(raid.cid or "")
+    if existing:match("^rs%-?%d+%-%x+$") then
+        return existing
+    end
+    raid.cid = calculatedRaidIdentity(guildKey, raid)
+    return raid.cid
+end
+
 local function selectedRaid(selectedRaidIDs, raidID)
     if type(selectedRaidIDs) ~= "table" then
         return true
@@ -199,7 +234,8 @@ local function selectedRaid(selectedRaidIDs, raidID)
 end
 
 local function raidSelected(selectedRaidIDs, raidID, raid)
-    if selectedRaid(selectedRaidIDs, raidID) or selectedRaid(selectedRaidIDs, raid and raid.id) then
+    if selectedRaid(selectedRaidIDs, raidID) or selectedRaid(selectedRaidIDs, raid and raid.id)
+        or selectedRaid(selectedRaidIDs, raid and raid.cid) then
         return true
     end
     if type(selectedRaidIDs) == "table" then
@@ -293,6 +329,178 @@ local function setRaidStatus(raid, nameID, status, timestamp)
     return true
 end
 
+local function mergeNameIDs(target, incoming)
+    target = type(target) == "table" and target or {}
+    local seen = {}
+    for _, nameID in ipairs(target) do
+        seen[nameID] = true
+    end
+    for _, nameID in ipairs(incoming or {}) do
+        if not seen[nameID] then
+            target[#target + 1] = nameID
+            seen[nameID] = true
+        end
+    end
+    return target
+end
+
+local function earlierPositive(left, right)
+    left = tonumber(left) or 0
+    right = tonumber(right) or 0
+    if left <= 0 then return right > 0 and right or nil end
+    if right <= 0 then return left end
+    return math.min(left, right)
+end
+
+local function laterPositive(left, right)
+    left = tonumber(left) or 0
+    right = tonumber(right) or 0
+    local value = math.max(left, right)
+    return value > 0 and value or nil
+end
+
+local function mergeRaidKill(targetRaid, sourceKill)
+    targetRaid.kills = targetRaid.kills or {}
+    local encounterID = tonumber(sourceKill and sourceKill.e) or 0
+    local sourceDifficulty = tonumber(sourceKill and sourceKill.d) or 0
+    for _, targetKill in ipairs(targetRaid.kills) do
+        local targetDifficulty = tonumber(targetKill and targetKill.d) or 0
+        if (tonumber(targetKill and targetKill.e) or 0) == encounterID
+            and (targetDifficulty == sourceDifficulty or targetDifficulty == 0 or sourceDifficulty == 0) then
+            targetKill.ts = earlierPositive(targetKill.ts, sourceKill.ts)
+            targetKill.b = targetKill.b or sourceKill.b
+            if targetDifficulty == 0 then targetKill.d = sourceDifficulty end
+            targetKill.n = math.max(tonumber(targetKill.n) or 0, tonumber(sourceKill.n) or 0)
+            for _, key in ipairs({ "p", "bench", "late", "out", "noshow" }) do
+                targetKill[key] = mergeNameIDs(targetKill[key], sourceKill[key])
+            end
+            return false
+        end
+    end
+
+    targetRaid.kills[#targetRaid.kills + 1] = sourceKill
+    return true
+end
+
+local function mergeRaidRecord(target, source)
+    ensureRaidMaps(target)
+    ensureRaidMaps(source)
+    target.st = earlierPositive(target.st, source.st)
+    target.sst = earlierPositive(target.sst, source.sst)
+    target.en = math.max(tonumber(target.en) or 0, tonumber(source.en) or 0)
+    target.set = laterPositive(target.set, source.set)
+    target.adEnd = laterPositive(target.adEnd, source.adEnd)
+    target.adDur = laterPositive(target.adDur, source.adDur)
+
+    for _, key in ipairs({ "z", "iid", "diff", "did", "sea", "tn", "by", "reason", "adhoc",
+        "autoPug", "lastSource" }) do
+        if target[key] == nil or target[key] == "" or target[key] == 0 then
+            target[key] = source[key]
+        end
+    end
+
+    local attendanceIDs = {}
+    for _, map in ipairs({ source.p, source.b, source.late, source.out, source.noshow }) do
+        for nameID in pairs(map or {}) do
+            attendanceIDs[nameID] = true
+        end
+    end
+    for nameID in pairs(attendanceIDs) do
+        local status, timestamp = mapStatus(source, nameID)
+        if status then
+            setRaidStatus(target, nameID, status, timestamp)
+        end
+    end
+
+    for _, sourceKill in ipairs(source.kills or {}) do
+        if type(sourceKill) == "table" then
+            mergeRaidKill(target, sourceKill)
+        end
+    end
+    for _, key in ipairs({ "sy", "rem" }) do
+        target[key] = type(target[key]) == "table" and target[key] or {}
+        for mapKey, value in pairs(type(source[key]) == "table" and source[key] or {}) do
+            if target[key][mapKey] == nil then
+                target[key][mapKey] = value
+            end
+        end
+    end
+end
+
+function LV.DataSync:NormalizeLegacyRaidIDs()
+    LV.Store:InitializeIfNeeded()
+    local totals = { raids = 0, merged = 0, links = 0, guilds = 0 }
+
+    for guildKey, rawRecord in pairs((LV.Store.db and LV.Store.db.g) or {}) do
+        if type(rawRecord) == "table" then
+            local record = LV.Store:GuildRecord(guildKey)
+            record.mig = type(record.mig) == "table" and record.mig or {}
+            if (tonumber(record.mig.rid) or 0) < RAID_ID_MIGRATION_VERSION then
+                local rows = {}
+                for oldRaidID, raid in pairs(record.r or {}) do
+                    rows[#rows + 1] = { id = oldRaidID, raid = raid }
+                end
+                table.sort(rows, function(left, right)
+                    local leftStart = tonumber(type(left.raid) == "table" and left.raid.st) or 0
+                    local rightStart = tonumber(type(right.raid) == "table" and right.raid.st) or 0
+                    if leftStart ~= rightStart then return leftStart < rightStart end
+                    return tostring(left.id) < tostring(right.id)
+                end)
+
+                local normalized = {}
+                local links = {}
+                for _, item in ipairs(rows) do
+                    local oldRaidID, raid = item.id, item.raid
+                    if type(raid) == "table" and not LV.Store:IsGlobalPugTeam(raid.team) then
+                        local oldRecordID = raid.id
+                        local oldCanonicalID = raid.cid
+                        local canonicalID = calculatedRaidIdentity(guildKey, raid)
+                        links[tostring(oldRaidID)] = canonicalID
+                        if oldRecordID ~= nil then links[tostring(oldRecordID)] = canonicalID end
+                        if oldCanonicalID ~= nil then links[tostring(oldCanonicalID)] = canonicalID end
+                        links[canonicalID] = canonicalID
+
+                        if tostring(oldRaidID) ~= canonicalID or tostring(oldRecordID or "") ~= canonicalID
+                            or tostring(oldCanonicalID or "") ~= canonicalID then
+                            totals.raids = totals.raids + 1
+                        end
+                        raid.id = canonicalID
+                        raid.cid = canonicalID
+                        if normalized[canonicalID] then
+                            mergeRaidRecord(normalized[canonicalID], raid)
+                            totals.merged = totals.merged + 1
+                        else
+                            normalized[canonicalID] = raid
+                        end
+                    else
+                        normalized[oldRaidID] = raid
+                    end
+                end
+                record.r = normalized
+
+                for _, collection in ipairs({ record.l, record.t }) do
+                    for _, row in ipairs(collection or {}) do
+                        if type(row) == "table" and row.sid ~= nil then
+                            local canonicalID = links[tostring(row.sid)]
+                            if canonicalID and tostring(row.sid) ~= canonicalID then
+                                row.sid = canonicalID
+                                totals.links = totals.links + 1
+                            end
+                        end
+                    end
+                end
+                if record.cur ~= nil and links[tostring(record.cur)] then
+                    record.cur = links[tostring(record.cur)]
+                end
+                record.mig.rid = RAID_ID_MIGRATION_VERSION
+                totals.guilds = totals.guilds + 1
+            end
+        end
+    end
+
+    return totals
+end
+
 local function normalizedName(name)
     name = LV.Util:Trim(name)
     if name ~= "" and not name:find("-", 1, true) then
@@ -312,6 +520,61 @@ end
 
 local function itemForID(guildKey, itemID)
     return LV.Store:DictionaryValue(guildKey, "i", itemID)
+end
+
+local function sortedResolvedNames(guildKey, values)
+    local names = {}
+    for id in pairs(values or {}) do
+        local name = nameForID(guildKey, id):lower()
+        if name ~= "" then names[#names + 1] = name end
+    end
+    table.sort(names)
+    return table.concat(names, ",")
+end
+
+local function sortedListNames(guildKey, values)
+    local names = {}
+    for _, id in ipairs(values or {}) do
+        local name = nameForID(guildKey, id):lower()
+        if name ~= "" then names[#names + 1] = name end
+    end
+    table.sort(names)
+    return table.concat(names, ",")
+end
+
+local function raidContentSignature(guildKey, record, raidID, raid)
+    local tokens = {}
+    for _, status in ipairs(statusOrder) do
+        local key = statusMaps[status]
+        tokens[#tokens + 1] = "a|" .. status .. "|" .. sortedResolvedNames(guildKey, raid and raid[key])
+    end
+    for _, kill in ipairs((raid and raid.kills) or {}) do
+        tokens[#tokens + 1] = table.concat({
+            "k", tostring(tonumber(kill and kill.e) or 0), tostring(tonumber(kill and kill.d) or 0),
+            sortedListNames(guildKey, kill and kill.p), sortedListNames(guildKey, kill and kill.bench),
+            sortedListNames(guildKey, kill and kill.late), sortedListNames(guildKey, kill and kill.out),
+            sortedListNames(guildKey, kill and kill.noshow),
+        }, "|")
+    end
+    for _, row in ipairs((record and record.l) or {}) do
+        if type(row) == "table" and tostring(row.sid or "") == tostring(raidID or "")
+            and not (LV.Loot and LV.Loot.IsWarboundRow and LV.Loot:IsWarboundRow(guildKey, row)) then
+            tokens[#tokens + 1] = table.concat({
+                "l", nameForID(guildKey, row.p):lower(), tostring(tonumber(row.itemID) or 0),
+                itemForID(guildKey, row.item):lower(), tostring(tonumber(row.e) or 0), tostring(row.src or ""),
+            }, "|")
+        end
+    end
+    for _, row in ipairs((record and record.t) or {}) do
+        if type(row) == "table" and tostring(row.sid or "") == tostring(raidID or "") then
+            tokens[#tokens + 1] = table.concat({
+                "t", nameForID(guildKey, row.f):lower(), nameForID(guildKey, row.to):lower(),
+                tostring(tonumber(row.itemID) or 0), itemForID(guildKey, row.item):lower(),
+            }, "|")
+        end
+    end
+    table.sort(tokens)
+    return stableHash(table.concat(tokens, "\031"))
 end
 
 local function encodeStatusList(guildKey, map)
@@ -484,7 +747,11 @@ function LV.DataSync:BuildManifest(guildKey)
     for raidID, raid in pairs((record and record.r) or {}) do
         if type(raid) == "table" and (tonumber(raid.st) or 0) >= cutoff
             and not LV.Store:IsRaidExcludedFromSync(guildKey, raid) then
-            rows[#rows + 1] = { id = raidID, raid = raid }
+            rows[#rows + 1] = {
+                id = raidID,
+                syncID = self:RaidIdentity(guildKey, raid) or raidID,
+                raid = raid,
+            }
         end
     end
     table.sort(rows, function(a, b)
@@ -498,10 +765,11 @@ function LV.DataSync:BuildManifest(guildKey)
 
     local raidLinks = {}
     for _, item in ipairs(rows) do
-        setRaidExportLink(raidLinks, item.id, item.id)
-        setRaidExportLink(raidLinks, item.raid.id, item.id)
+        setRaidExportLink(raidLinks, item.id, item.syncID)
+        setRaidExportLink(raidLinks, item.raid.id, item.syncID)
+        setRaidExportLink(raidLinks, item.raid.cid, item.syncID)
         for _, remoteRaidID in pairs(item.raid.sy or {}) do
-            setRaidExportLink(raidLinks, remoteRaidID, item.id)
+            setRaidExportLink(raidLinks, remoteRaidID, item.syncID)
         end
     end
     local lootCounts = {}
@@ -536,7 +804,7 @@ function LV.DataSync:BuildManifest(guildKey)
     for _, item in ipairs(rows) do
         local raid = item.raid
         lines[#lines + 1] = line("MR", {
-            { "id", item.id },
+            { "id", item.syncID },
             { "st", raid.st },
             { "sst", raid.sst },
             { "iid", raid.iid },
@@ -545,8 +813,9 @@ function LV.DataSync:BuildManifest(guildKey)
             { "kills", #(raid.kills or {}) },
             { "ks", raidKillSignature(raid) },
             { "people", raidAttendanceCount(raid) },
-            { "loot", lootCounts[item.id] or 0 },
-            { "trades", tradeCounts[item.id] or 0 },
+            { "loot", lootCounts[item.syncID] or 0 },
+            { "trades", tradeCounts[item.syncID] or 0 },
+            { "sig", raidContentSignature(guildKey, record, item.id, raid) },
         })
     end
     return table.concat(lines, "\n"), #rows
@@ -573,6 +842,7 @@ function LV.DataSync:ParseManifest(payload)
                 people = tonumber(fields.people) or 0,
                 loot = tonumber(fields.loot) or 0,
                 trades = tonumber(fields.trades) or 0,
+                signature = fields.sig or "",
             }
             manifest.raids[#manifest.raids + 1] = entry
             manifest.byID[entry.id] = entry
@@ -605,9 +875,10 @@ function LV.DataSync:BuildExport(guildKey, selectedRaidIDs, options)
             excludedRaidIDs[raidID] = true
             if raid.id then excludedRaidIDs[raid.id] = true end
         elseif type(raid) == "table" then
-            local exportRaidID = raid.id or raidID
+            local exportRaidID = self:RaidIdentity(guildKey, raid) or raid.id or raidID
             setRaidExportLink(raidExportLinks, raidID, exportRaidID)
             setRaidExportLink(raidExportLinks, raid.id, exportRaidID)
+            setRaidExportLink(raidExportLinks, raid.cid, exportRaidID)
             for _, remoteRaidID in pairs(raid.sy or {}) do
                 setRaidExportLink(raidExportLinks, remoteRaidID, exportRaidID)
             end
@@ -714,7 +985,10 @@ function LV.DataSync:BuildExport(guildKey, selectedRaidIDs, options)
     local raids = {}
     for raidID, raid in pairs((record and record.r) or {}) do
         if type(raid) == "table" and not excludedRaidIDs[raidID] and (tonumber(raid.st) or 0) >= cutoff then
-            raids[#raids + 1] = { raid = raid, id = raid.id or raidID }
+            raids[#raids + 1] = {
+                raid = raid,
+                id = self:RaidIdentity(guildKey, raid) or raid.id or raidID,
+            }
         end
     end
     table.sort(raids, function(a, b)
@@ -1084,6 +1358,12 @@ function LV.DataSync:BuildComparison(session)
     local localManifest = self:ParseManifest(self:BuildManifest(session.guildKey))
     local comparison = { missingLocal = {}, missingRemote = {} }
     local sender = self:GenericTarget(session)
+    local function countsEqual(left, right)
+        return (tonumber(left and left.kills) or 0) == (tonumber(right and right.kills) or 0)
+            and (tonumber(left and left.people) or 0) == (tonumber(right and right.people) or 0)
+            and (tonumber(left and left.loot) or 0) == (tonumber(right and right.loot) or 0)
+            and (tonumber(left and left.trades) or 0) == (tonumber(right and right.trades) or 0)
+    end
 
     for _, remote in ipairs(session.remoteManifest.raids or {}) do
         local _, raid = self:FindRaid(session.guildKey, record, sender, {
@@ -1108,7 +1388,10 @@ function LV.DataSync:BuildComparison(session)
             (tonumber(remote.kills) or 0) > (tonumber(localEntry.kills) or 0)
             or (tonumber(remote.people) or 0) > (tonumber(localEntry.people) or 0)
             or (tonumber(remote.loot) or 0) > (tonumber(localEntry.loot) or 0)
-            or (tonumber(remote.trades) or 0) > (tonumber(localEntry.trades) or 0))
+            or (tonumber(remote.trades) or 0) > (tonumber(localEntry.trades) or 0)
+            or (countsEqual(remote, localEntry)
+                and remote.signature ~= "" and localEntry.signature ~= ""
+                and remote.signature ~= localEntry.signature))
         if not raid or remoteHasMore then
             remote.update = raid and true or nil
             comparison.missingLocal[#comparison.missingLocal + 1] = remote
@@ -1129,7 +1412,10 @@ function LV.DataSync:BuildComparison(session)
             (tonumber(localEntry.kills) or 0) > (tonumber(remoteEntry.kills) or 0)
             or (tonumber(localEntry.people) or 0) > (tonumber(remoteEntry.people) or 0)
             or (tonumber(localEntry.loot) or 0) > (tonumber(remoteEntry.loot) or 0)
-            or (tonumber(localEntry.trades) or 0) > (tonumber(remoteEntry.trades) or 0))
+            or (tonumber(localEntry.trades) or 0) > (tonumber(remoteEntry.trades) or 0)
+            or (countsEqual(localEntry, remoteEntry)
+                and localEntry.signature ~= "" and remoteEntry.signature ~= ""
+                and localEntry.signature ~= remoteEntry.signature))
         if not found or localHasMore then
             localEntry.update = found and true or nil
             comparison.missingRemote[#comparison.missingRemote + 1] = localEntry
@@ -1472,6 +1758,9 @@ function LV.DataSync:ManifestRaidsMatch(left, right)
     local rightTeam = tostring(right.team or "main")
     local leftIID = tonumber(left.iid) or 0
     local rightIID = tonumber(right.iid) or 0
+    if not LV.Util:IsBlank(left.id) and tostring(left.id) == tostring(right.id or "") then
+        return true
+    end
     local delta = math.abs((tonumber(left.st) or 0) - (tonumber(right.st) or 0))
     if leftTeam ~= rightTeam or delta > 10 * 60
         or (leftIID > 0 and rightIID > 0 and leftIID ~= rightIID) then
@@ -1543,6 +1832,12 @@ end
 function LV.DataSync:FindRaid(guildKey, record, sender, fields)
     fields = fields or {}
     local remoteID = fields.id
+    for raidID, raid in pairs((record and record.r) or {}) do
+        if type(raid) == "table" and remoteID ~= nil
+            and tostring(self:RaidIdentity(guildKey, raid) or "") == tostring(remoteID) then
+            return raidID, raid, false
+        end
+    end
     for raidID, raid in pairs((record and record.r) or {}) do
         if type(raid) == "table" and type(raid.sy) == "table" then
             for remoteSender, knownID in pairs(raid.sy) do
@@ -1641,9 +1936,15 @@ function LV.DataSync:ImportRaid(guildKey, record, sender, fields, remoteRaidMap)
     local created = false
 
     if not raid then
-        raidID = LV.Store:NewID(record, "raid", "r")
+        local preferredID = tostring(fields.id or "")
+        if preferredID:match("^rs[%w%-]+$") and record.r[preferredID] == nil then
+            raidID = preferredID
+        else
+            raidID = LV.Store:NewID(record, "raid", "r")
+        end
         raid = {
             id = raidID,
+            cid = preferredID:match("^rs[%w%-]+$") and preferredID or nil,
             st = tonumber(fields.st) or LV.Util:Now(),
             sst = tonumber(fields.sst),
             set = tonumber(fields.set),
@@ -1678,7 +1979,9 @@ function LV.DataSync:ImportRaid(guildKey, record, sender, fields, remoteRaidMap)
         raid.sst = raid.sst or tonumber(fields.sst)
         raid.set = raid.set or tonumber(fields.set)
         raid.z = raid.z or LV.Store:StringID(guildKey, fields.z or "")
+        if (tonumber(raid.iid) or 0) == 0 then raid.iid = tonumber(fields.iid) or 0 end
         raid.diff = raid.diff or LV.Store:StringID(guildKey, fields.diff or "")
+        if (tonumber(raid.did) or 0) == 0 then raid.did = tonumber(fields.did) or 0 end
         raid.sea = raid.sea or (LV.Seasons:IsSeasonID(fields.sea) and fields.sea or nil)
         raid.tn = raid.tn or (fields.tn ~= "" and LV.Store:StringID(guildKey, fields.tn) or nil)
     end
@@ -1706,8 +2009,36 @@ function LV.DataSync:ImportKill(guildKey, record, fields, remoteRaidMap)
     raid.kills = raid.kills or {}
     local ts = tonumber(fields.ts) or 0
     local encounterID = tonumber(fields.e) or 0
+    local incomingDifficulty = tonumber(fields.d) or 0
+    local function mergeNames(target, incoming)
+        local seen = {}
+        for _, nameID in ipairs(target or {}) do
+            seen[nameID] = true
+        end
+        for _, nameID in ipairs(incoming or {}) do
+            if not seen[nameID] then
+                target[#target + 1] = nameID
+                seen[nameID] = true
+            end
+        end
+    end
     for _, kill in ipairs(raid.kills) do
-        if math.abs((tonumber(kill.ts) or 0) - ts) <= 5 and (tonumber(kill.e) or 0) == encounterID then
+        local existingDifficulty = tonumber(kill.d) or 0
+        if (tonumber(kill.e) or 0) == encounterID
+            and (existingDifficulty == incomingDifficulty or existingDifficulty == 0 or incomingDifficulty == 0) then
+            kill.b = kill.b or LV.Store:StringID(guildKey, fields.boss or "")
+            if existingDifficulty == 0 then kill.d = incomingDifficulty end
+            kill.n = math.max(tonumber(kill.n) or 0, tonumber(fields.n) or 0)
+            kill.p = kill.p or {}
+            kill.bench = kill.bench or {}
+            kill.late = kill.late or {}
+            kill.out = kill.out or {}
+            kill.noshow = kill.noshow or {}
+            mergeNames(kill.p, decodeNameList(guildKey, fields.p))
+            mergeNames(kill.bench, decodeNameList(guildKey, fields.bench))
+            mergeNames(kill.late, decodeNameList(guildKey, fields.late))
+            mergeNames(kill.out, decodeNameList(guildKey, fields.out))
+            mergeNames(kill.noshow, decodeNameList(guildKey, fields.ns))
             return false
         end
     end
@@ -2718,6 +3049,12 @@ local function repairCurrentGuildOrphans()
 end
 
 LV:RegisterEvent("PLAYER_LOGIN", function()
+    local normalized = LV.DataSync:NormalizeLegacyRaidIDs()
+    if normalized.raids > 0 or normalized.merged > 0 or normalized.links > 0 then
+        LV:Print("Normalized " .. tostring(normalized.raids) .. " legacy raid ID(s), merged "
+            .. tostring(normalized.merged) .. " duplicate raid record(s), and relinked "
+            .. tostring(normalized.links) .. " loot/trade event(s).")
+    end
     if C_Timer and C_Timer.After then
         C_Timer.After(1, repairCurrentGuildOrphans)
     else

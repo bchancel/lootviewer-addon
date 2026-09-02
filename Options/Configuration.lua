@@ -897,12 +897,19 @@ function UI:OpenRaidTeamModal(cfg, team)
             LV:Print("Keep at least one raid team.")
             return
         end
-        for index, candidate in ipairs(cfg.teams) do
-            if candidate == team then table.remove(cfg.teams, index) break end
-        end
-        cfg.selectedTeam = cfg.teams[1].id
-        layer:Hide()
-        self:Refresh()
+        self:ShowConfirmationDialog({
+            title = "Delete Raid Team?",
+            message = "Delete " .. tostring(team.name or team.id) .. " and its roster and schedule? Existing raid history keeps its team tag. This cannot be undone.",
+            acceptText = "Delete Team",
+            onAccept = function()
+                for index, candidate in ipairs(cfg.teams) do
+                    if candidate == team then table.remove(cfg.teams, index) break end
+                end
+                cfg.selectedTeam = cfg.teams[1].id
+                layer:Hide()
+                self:Refresh()
+            end,
+        })
     end, "danger")
     delete:SetPoint("BOTTOMLEFT", 24, 20)
     local done = LV.Widgets:Button(modal, "Done", 96, 28, function()
