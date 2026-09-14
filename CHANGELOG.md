@@ -1,5 +1,14 @@
 # Changelog
 
+## 12.1.11 - 2026-09-14
+
+1. Added a Players tab under Configuration with player search and an optional Show Pugs filter.
+2. Added player Edit and confirmed Delete actions for managing tags, alt links, rosters, attendance, loot, and trades.
+3. Player details and main-character search results now show the full Name-Realm so cross-realm characters are easy to identify.
+4. Loot history now resolves short player names against the active raid instead of incorrectly assigning the guild realm.
+5. Existing synthetic player aliases are repaired automatically when raid attendance identifies one unambiguous character.
+6. Added an Always Show Roster Invites option so team invites remain available outside scheduled raid hours.
+
 ## 12.1.10 - 2026-09-02
 
 1. Raid sync now recognizes the same raid across different players and imports only missing attendance, kills, loot, and trades.

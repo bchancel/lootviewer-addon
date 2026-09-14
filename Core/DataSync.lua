@@ -37,6 +37,7 @@ local configBooleans = {
     enabled = true,
     prompt = true,
     tradeRaid = true,
+    alwaysShowRosterInvites = true,
 }
 
 local configNumbers = {
@@ -916,6 +917,7 @@ function LV.DataSync:BuildExport(guildKey, selectedRaidIDs, options)
             { "endGrace", cfg.endGrace },
             { "promptTimeout", cfg.promptTimeout },
             { "lateGrace", cfg.lateGrace },
+            { "alwaysShowRosterInvites", boolString(cfg.alwaysShowRosterInvites) },
             { "authority", cfg.authority },
             { "rankMin", cfg.rankMin },
             { "rankMax", cfg.rankMax },

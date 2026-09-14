@@ -24,6 +24,7 @@ LV.Constants = {
             endGrace = 0,
             promptTimeout = 30,
             lateGrace = 10,
+            alwaysShowRosterInvites = false,
             authority = "assist",
             rankMin = 0,
             rankMax = 3,

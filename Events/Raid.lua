@@ -122,7 +122,7 @@ local function refreshRosterUI()
     end
 end
 
-function LV.Raid:RaidInviteWindow(team)
+function LV.Raid:RaidInviteWindow(team, alwaysShow)
     if type(team) ~= "table" then
         return nil
     end
@@ -146,6 +146,12 @@ function LV.Raid:RaidInviteWindow(team)
                 }
             end
         end
+    end
+    if alwaysShow == true then
+        return {
+            always = true,
+            currentMinute = currentMinute,
+        }
     end
     return nil
 end
@@ -307,7 +313,7 @@ function LV.Raid:StartRosterInvites(guildKey, teamID, filter)
     end
     local record = LV.Store:GuildRecord(guildKey)
     local team = record and LV.Store:GetTeamByID(record, teamID)
-    if not team or not self:RaidInviteWindow(team) then
+    if not team or not self:RaidInviteWindow(team, record.cfg and record.cfg.alwaysShowRosterInvites) then
         return false, "Team invites are available from 30 minutes before raid time until the raid ends."
     end
     if not self:CanInviteRoster() then

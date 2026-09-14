@@ -1971,7 +1971,8 @@ function LV.UI:RenderTeamRoster()
         previousTab = tab
     end
 
-    local inviteWindow = LV.Raid and LV.Raid.RaidInviteWindow and LV.Raid:RaidInviteWindow(team)
+    local inviteWindow = LV.Raid and LV.Raid.RaidInviteWindow
+        and LV.Raid:RaidInviteWindow(team, cfg.alwaysShowRosterInvites)
     local panelsTop = -150
     local rosterPanelHeight = 242
     if inviteWindow then
@@ -1983,7 +1984,9 @@ function LV.UI:RenderTeamRoster()
         local selectedInviteFilter = self.rosterInviteFilters[team.id] or "raiders"
         local minutesUntil = math.ceil(((tonumber(inviteWindow.scheduledStartAt) or LV.Util:ServerNow())
             - LV.Util:ServerNow()) / 60)
-        local timingText = minutesUntil > 0 and ("Starts in " .. tostring(minutesUntil) .. " min") or "Raid in progress"
+        local timingText = inviteWindow.always and "Always available"
+            or minutesUntil > 0 and ("Starts in " .. tostring(minutesUntil) .. " min")
+            or "Raid in progress"
         local inviteHint = LV.Widgets:Text(invitePanel, timingText)
         inviteHint:SetPoint("TOPLEFT", 12, -42)
         inviteHint:SetWidth(112)
@@ -3240,14 +3243,42 @@ end
 
 function LV.UI:MeterDetailMainCandidates(guildKey, playerID)
     local record = LV.Store:GuildRecord(guildKey)
-    local candidates = {}
-    for id, fullName in ipairs((record and record.d and record.d.n) or {}) do
-        if tonumber(id) ~= tonumber(playerID) and LV.Util:Trim(fullName) ~= "" then
-            candidates[#candidates + 1] = {
-                value = fullName,
-                label = LV.Util:ShortName(fullName),
-            }
+    local candidatesByID = {}
+    local function include(nameID)
+        nameID = tonumber(nameID)
+        if not nameID or nameID == tonumber(playerID) then
+            return
         end
+        local fullName = LV.Store:DictionaryValue(guildKey, "n", nameID)
+        if LV.Util:Trim(fullName) ~= "" then
+            candidatesByID[nameID] = fullName
+        end
+    end
+
+    for nameID in pairs((record and record.gr) or {}) do
+        include(nameID)
+    end
+    for _, team in ipairs((record and record.cfg and record.cfg.teams) or {}) do
+        for nameID in pairs((type(team) == "table" and team.ro) or {}) do
+            include(nameID)
+        end
+    end
+    for _, raid in pairs((record and record.r) or {}) do
+        if type(raid) == "table" then
+            for _, map in ipairs({ raid.p, raid.b, raid.late, raid.out, raid.noshow }) do
+                for nameID in pairs(map or {}) do
+                    include(nameID)
+                end
+            end
+        end
+    end
+
+    local candidates = {}
+    for _, fullName in pairs(candidatesByID) do
+        candidates[#candidates + 1] = {
+            value = fullName,
+            label = fullName,
+        }
     end
     table.sort(candidates, function(a, b)
         return compareText(a.label, b.label)
@@ -3420,7 +3451,9 @@ function LV.UI:ShowMeterPlayerDetail(guildKey, row, raidCount)
         self.meterDetailRosterEditing = rosterAssignmentCount > 0
     end
 
-    local title = self:TrackMeterDetail(LV.Widgets:Text(frame, row.name, "large"))
+    local detailFullName = row.fullName or LV.Store:DictionaryValue(guildKey, "n", row.id)
+    local title = self:TrackMeterDetail(LV.Widgets:Text(frame,
+        detailFullName ~= "" and detailFullName or row.name, "large"))
     title:SetPoint("TOPLEFT", 22, -18)
     self:SetNameClassColor(title, guildKey, row.id)
 
@@ -3453,7 +3486,7 @@ function LV.UI:ShowMeterPlayerDetail(guildKey, row, raidCount)
             return self.meterDetailMain or ""
         end, function(value)
             self.meterDetailMain = value
-        end, 160, 6))
+        end, 190, 6))
         mainSearch:SetPoint("TOPLEFT", 418, -62)
 
         local saveMain = self:TrackMeterDetail(LV.Widgets:Button(frame, "Save", 70, 28, function()

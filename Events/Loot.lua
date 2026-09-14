@@ -251,6 +251,69 @@ local function sameItem(itemA, itemB)
     return LV.Util:ItemKey(itemA) ~= "" and LV.Util:ItemKey(itemA) == LV.Util:ItemKey(itemB)
 end
 
+local function activeRaidPlayerName(name)
+    name = LV.Util:Trim(name)
+    if name == "" or name:find("-", 1, true) then
+        return name ~= "" and name or nil
+    end
+
+    local wanted = name:lower()
+    local function uniqueMatch(addCandidates)
+        local matches = {}
+        addCandidates(function(fullName)
+            fullName = LV.Util:Trim(fullName)
+            if fullName ~= "" and LV.Util:ShortName(fullName):lower() == wanted then
+                matches[fullName:lower()] = fullName
+            end
+        end)
+
+        local match
+        local count = 0
+        for _, fullName in pairs(matches) do
+            match = fullName
+            count = count + 1
+            if count > 1 then
+                return nil
+            end
+        end
+        return match
+    end
+
+    local groupMatch = uniqueMatch(function(include)
+        local function inspect(unit)
+            if type(UnitExists) == "function" and UnitExists(unit) then
+                include(LV.Util:UnitFullName(unit))
+            end
+        end
+
+        inspect("player")
+        if type(IsInRaid) == "function" and IsInRaid() then
+            for index = 1, (tonumber(GetNumGroupMembers()) or 0) do
+                inspect("raid" .. index)
+            end
+        elseif type(IsInGroup) == "function" and IsInGroup() then
+            for index = 1, (tonumber(GetNumSubgroupMembers()) or 0) do
+                inspect("party" .. index)
+            end
+        end
+    end)
+    if groupMatch then
+        return groupMatch
+    end
+
+    local session, _, guildKey = LV.Raid:GetActiveSession()
+    if not session or not guildKey then
+        return nil
+    end
+    return uniqueMatch(function(include)
+        for _, map in ipairs({ session.p, session.b, session.late, session.out, session.noshow }) do
+            for nameID in pairs(map or {}) do
+                include(LV.Store:DictionaryValue(guildKey, "n", nameID))
+            end
+        end
+    end)
+end
+
 local function normalizeWinnerName(value)
     if type(value) == "string" then
         value = LV.Util:Trim(value)
@@ -294,8 +357,13 @@ local function normalizeLootHistoryName(name)
         return nil
     end
     if not name:find("-", 1, true) then
-        local info = LV.Guild:CurrentInfo()
-        name = name .. "-" .. ((info and info.realm) or LV.Util:RealmName())
+        local resolved = activeRaidPlayerName(name)
+        if resolved then
+            name = resolved
+        else
+            local info = LV.Guild:CurrentInfo()
+            name = name .. "-" .. ((info and info.realm) or LV.Util:RealmName())
+        end
     end
     return name
 end
@@ -376,8 +444,13 @@ function LV.Loot:NormalizePlayerName(name)
         return LV.Util:PlayerFullName()
     end
     if not name:find("-", 1, true) then
-        local info = LV.Guild:CurrentInfo()
-        name = name .. "-" .. ((info and info.realm) or LV.Util:RealmName())
+        local resolved = activeRaidPlayerName(name)
+        if resolved then
+            name = resolved
+        else
+            local info = LV.Guild:CurrentInfo()
+            name = name .. "-" .. ((info and info.realm) or LV.Util:RealmName())
+        end
     end
     return name
 end

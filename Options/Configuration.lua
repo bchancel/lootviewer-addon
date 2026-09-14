@@ -4,6 +4,7 @@ if not LV or not LV.UI then
 end
 
 local UI = LV.UI
+local PLAYER_RESULT_LIMIT = 150
 
 local authorityModes = {
     { value = "assist", label = "Lead / Assist" },
@@ -760,6 +761,15 @@ function UI:RenderGeneralOptions(guildInfo)
                     end, 126)
             end,
         },
+        {
+            function(parent, x, y, width)
+                checkCell(parent, x, y, width, "Always Show Roster Invites", cfg.alwaysShowRosterInvites,
+                    function(value)
+                        cfg.alwaysShowRosterInvites = value and true or false
+                    end,
+                    "Keeps the Invite Team controls available on the Roster page even outside scheduled raid hours.")
+            end,
+        },
     })
 end
 
@@ -996,11 +1006,141 @@ function UI:RenderRaidTeamOptions(guildInfo)
     content:SetHeight(math.max(1, -y + 4))
 end
 
+function UI:RenderPlayerOptions(guildInfo)
+    if not guildInfo then
+        local note = LV.Widgets:Text(self.content, "Player management is available while logged into a guilded character.")
+        note:SetPoint("TOPLEFT", 26, -146)
+        note:SetTextColor(unpack(LV.Widgets.colors.muted))
+        return
+    end
+
+    local guildKey = guildInfo.key
+    self.configShowPugs = self.configShowPugs == true
+    self.configPlayerSearch = LV.Util:Trim(self.configPlayerSearch or "")
+
+    local section = LV.Widgets:Section(self.content, "Players", 520)
+    section:SetPoint("TOPLEFT", 22, -132)
+    section:SetPoint("BOTTOMRIGHT", -22, 20)
+
+    local showPugs = LV.Widgets:Check(section, "Show pugs", function(value)
+        self.configShowPugs = value and true or false
+        self:Refresh()
+    end)
+    showPugs:SetChecked(self.configShowPugs)
+    showPugs:SetPoint("TOPLEFT", 8, -40)
+    LV.Widgets:SetTooltip(showPugs, "Include players who are not tagged as guild mains or alts.")
+
+    local searchLabel = LV.Widgets:Label(section, "Player search")
+    searchLabel:SetPoint("TOPLEFT", 190, -43)
+    local search = LV.Widgets:EditBox(section, 270, 26, function(value)
+        value = LV.Util:Trim(value or "")
+        if value ~= self.configPlayerSearch then
+            self.configPlayerSearch = value
+            self:Refresh()
+        end
+    end)
+    search:SetText(self.configPlayerSearch)
+    search:SetPoint("LEFT", searchLabel, "RIGHT", 10, 0)
+    local clear = LV.Widgets:Button(section, "Clear", 58, 26, function()
+        self.configPlayerSearch = ""
+        self:Refresh()
+    end)
+    clear:SetPoint("LEFT", search, "RIGHT", 8, 0)
+
+    local query = self.configPlayerSearch:lower()
+    local matches = {}
+    local total = 0
+    for _, player in ipairs(LV.Store:PlayerRows(guildKey)) do
+        local tag, mainID = LV.Guild:InferRosterTag(guildKey, player.id)
+        local includePug = self.configShowPugs or tag ~= "pug"
+        local searchText = (player.fullName .. " " .. player.name):lower()
+        if includePug and (query == "" or searchText:find(query, 1, true)) then
+            total = total + 1
+            if #matches < PLAYER_RESULT_LIMIT then
+                player.tag = tag
+                player.mainID = mainID
+                matches[#matches + 1] = player
+            end
+        end
+    end
+
+    local countText = LV.Widgets:Text(section, total == #matches
+        and (tostring(total) .. " player(s)")
+        or ("Showing " .. tostring(#matches) .. " of " .. tostring(total) .. " players; narrow the search to see more."))
+    countText:SetPoint("TOPLEFT", 8, -78)
+    countText:SetTextColor(unpack(LV.Widgets.colors.muted))
+
+    local scroll, content = LV.Widgets:ScrollFrame(section)
+    scroll:SetPoint("TOPLEFT", 8, -102)
+    scroll:SetPoint("BOTTOMRIGHT", -8, 10)
+    local width = math.max(650, (tonumber(section:GetWidth()) or 760) - 46)
+    local y = -2
+    for index, player in ipairs(matches) do
+        local playerID = player.id
+        local fullName = player.fullName
+        local row = CreateFrame("Frame", nil, content, "BackdropTemplate")
+        row:SetPoint("TOPLEFT", 2, y)
+        row:SetSize(width, 48)
+        LV.Widgets:ApplyBackdrop(row,
+            index % 2 == 0 and LV.Widgets.colors.canvasAlt or LV.Widgets.colors.surface,
+            LV.Widgets.colors.border)
+
+        local name = LV.Widgets:Text(row, fullName)
+        name:SetPoint("TOPLEFT", 12, -8)
+        name:SetWidth(width - 230)
+        name:SetWordWrap(false)
+        self:SetNameClassColor(name, guildKey, playerID)
+
+        local tagLabel = player.tag == "alt" and "Alt"
+            or player.tag == "pug" and "Pug"
+            or "Main"
+        if player.tag == "alt" and player.mainID then
+            local mainName = LV.Store:DictionaryValue(guildKey, "n", player.mainID)
+            if mainName ~= "" then
+                tagLabel = tagLabel .. " of " .. mainName
+            end
+        end
+        local detail = LV.Widgets:Text(row, tagLabel)
+        detail:SetPoint("TOPLEFT", 12, -28)
+        detail:SetWidth(width - 230)
+        detail:SetWordWrap(false)
+        detail:SetTextColor(unpack(LV.Widgets.colors.muted))
+
+        local delete = LV.Widgets:Button(row, "Delete", 74, 28, function()
+            self:ShowConfirmationDialog({
+                title = "Delete Player?",
+                message = "Delete " .. fullName .. " and remove their attendance, loot, trades, roster assignments, and alt links? This cannot be undone.",
+                acceptText = "Delete",
+                onAccept = function()
+                    local ok, deletedName, removed = LV.Store:DeletePlayer(guildKey, playerID)
+                    if ok then
+                        LV:Print("Deleted " .. deletedName .. ": " .. tostring(removed.raids) .. " raid(s), "
+                            .. tostring(removed.loot) .. " loot record(s), and " .. tostring(removed.trades) .. " trade(s) updated.")
+                    else
+                        LV:Print(deletedName or "Unable to delete player.")
+                    end
+                    self:Refresh()
+                end,
+            })
+        end, "danger")
+        delete:SetPoint("RIGHT", -10, 0)
+
+        local edit = LV.Widgets:Button(row, "Edit", 68, 28, function()
+            self:ShowPlayerDetailForName(guildKey, playerID)
+        end, "primary")
+        edit:SetPoint("RIGHT", delete, "LEFT", -8, 0)
+        y = y - 54
+    end
+    content:SetHeight(math.max(1, -y + 4))
+end
+
 function UI:RenderConfig()
     local guildInfo = LV.Guild:CurrentInfo()
     if guildInfo then LV.Store:GuildRecord(guildInfo.key) end
-    self.configView = self.configView == "teams" and "teams" or "general"
-    self:SetPageHeader("Configuration", "Account-wide dungeon logging and guild raid settings.", guildInfo)
+    if self.configView ~= "teams" and self.configView ~= "players" then
+        self.configView = "general"
+    end
+    self:SetPageHeader("Configuration", "Account settings, guild raid teams, and player management.", guildInfo)
     local tabs = self:Track(CreateFrame("Frame", nil, self.content))
     tabs:SetPoint("TOPLEFT", 22, -84)
     tabs:SetPoint("TOPRIGHT", -22, -84)
@@ -1011,8 +1151,13 @@ function UI:RenderConfig()
     local teams = LV.Widgets:Tab(tabs, "Raid Teams", 112, 38, function() self.configView = "teams" self:Refresh() end)
     teams:SetPoint("LEFT", general, "RIGHT", 4, 0)
     LV.Widgets:SetButtonActive(teams, self.configView == "teams")
+    local players = LV.Widgets:Tab(tabs, "Players", 112, 38, function() self.configView = "players" self:Refresh() end)
+    players:SetPoint("LEFT", teams, "RIGHT", 4, 0)
+    LV.Widgets:SetButtonActive(players, self.configView == "players")
     if self.configView == "teams" then
         self:RenderRaidTeamOptions(guildInfo)
+    elseif self.configView == "players" then
+        self:RenderPlayerOptions(guildInfo)
     else
         self:RenderGeneralOptions(guildInfo)
     end

@@ -295,8 +295,13 @@ if ($dataSyncText -notmatch 'RELIABLE_PROTOCOL_VERSION\s*=\s*3' -or
 }
 if ($storeText -notmatch 'function LV\.Store:TeamRoster' -or
     $storeText -notmatch 'function LV\.Store:SetTeamRosterPlayer' -or
+    $storeText -notmatch 'function LV\.Store:RepairSyntheticPlayerAliases' -or
+    $storeText -notmatch 'function LV\.Store:PlayerRows' -or
+    $storeText -notmatch 'function LV\.Store:DeletePlayer' -or
     $storeText -notmatch 'TEAM_ROSTER_TYPES' -or
     $raidText -notmatch 'function LV\.Raid:ApplyTeamRosterNoShows' -or
+    $raidText -notmatch 'RaidInviteWindow\(team, alwaysShow\)' -or
+    $raidText -notmatch 'alwaysShow == true' -or
     $raidText -notmatch 'function LV\.Raid:ReconcileLinkedAttendance' -or
     $raidText -notmatch 'function LV\.Raid:LinkedPlayerWasOnTime' -or
     $raidText -notmatch 'UnitIsConnected' -or
@@ -316,12 +321,24 @@ if ($storeText -notmatch 'function LV\.Store:TeamRoster' -or
     $uiText -notmatch 'Add to Roster' -or
     $uiText -notmatch 'Main \(Default\)' -or
     $uiText -notmatch 'function LV\.UI:MeterDetailMainCandidates' -or
+    $uiText -notmatch 'detailFullName ~= "" and detailFullName or row\.name' -or
+    $uiText -notmatch 'for nameID in pairs\(\(record and record\.gr\) or \{\}\)' -or
+    $uiText -notmatch 'label\s*=\s*fullName' -or
+    $lootText -notmatch 'local function activeRaidPlayerName' -or
+    $lootText -notmatch 'local resolved\s*=\s*activeRaidPlayerName\(name\)' -or
     $uiText -notmatch 'LV\.Util:IsBlank\(detectedClass\)' -or
     $widgetsText -notmatch 'function LV\.Widgets:MultiSelectDropdown' -or
     $widgetsText -notmatch 'function LV\.Widgets:SearchDropdown' -or
     $widgetsText -notmatch 'function selectSearchItem' -or
     $widgetsText -notmatch 'HookScript\("OnMouseDown"' -or
     $uiText -notmatch 'teamRosterRoleOrder' -or
+    $optionsText -notmatch 'function UI:RenderPlayerOptions' -or
+    $optionsText -notmatch '"Show pugs"' -or
+    $optionsText -notmatch '"Player search"' -or
+    $optionsText -notmatch '"Delete Player\?"' -or
+    $optionsText -notmatch '"Always Show Roster Invites"' -or
+    $constantsText -notmatch 'alwaysShowRosterInvites\s*=\s*false' -or
+    $dataSyncText -notmatch '\{ "alwaysShowRosterInvites", boolString\(cfg\.alwaysShowRosterInvites\) \}' -or
     $rosterSyncText -notmatch 'function LV\.RosterSync:RequestLatest' -or
     $rosterSyncText -notmatch 'function LV\.RosterSync:SendSnapshot' -or
     $rosterSyncText -notmatch 'function LV\.RosterSync:PublishPlayer' -or

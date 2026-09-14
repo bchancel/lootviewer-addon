@@ -13,6 +13,7 @@ end
 local DEFAULT_TEAM_COLOR = { r = 0.1725, g = 0.5569, b = 0.8275, a = 0.8 }
 local TEAM_ROSTER_TYPES = { raider = true, trial = true, helper = true, social = true }
 local TEAM_ROSTER_ROLES = { tank = true, healer = true, melee = true, ranged = true }
+local PLAYER_ALIAS_MIGRATION_VERSION = 1
 local GLOBAL_PUG_TEAM = {
     id = "pugs",
     name = "Pugs",
@@ -63,6 +64,256 @@ function LV.Store:NormalizeHistoricalRaidTimes(record)
         end
     end
     return repaired
+end
+
+local function storedPlayerName(record, nameID)
+    nameID = tonumber(nameID)
+    return nameID and LV.Util:Trim(record.d and record.d.n and record.d.n[nameID]) or ""
+end
+
+local function storedPlayerShortKey(record, nameID)
+    local name = storedPlayerName(record, nameID)
+    return name ~= "" and LV.Util:ShortName(name):lower() or nil
+end
+
+local function addPlayerCandidate(record, candidates, nameID)
+    nameID = tonumber(nameID)
+    local shortKey = nameID and storedPlayerShortKey(record, nameID)
+    if not shortKey then
+        return
+    end
+    candidates[shortKey] = candidates[shortKey] or {}
+    candidates[shortKey][nameID] = true
+end
+
+local function uniquePlayerCandidate(candidates, shortKey)
+    local found
+    for nameID in pairs((shortKey and candidates[shortKey]) or {}) do
+        if found and found ~= nameID then
+            return nil
+        end
+        found = nameID
+    end
+    return found
+end
+
+local function removePlayerFromArray(list, nameID)
+    local removed = 0
+    if type(list) ~= "table" then
+        return removed
+    end
+    for index = #list, 1, -1 do
+        if tonumber(list[index]) == nameID then
+            table.remove(list, index)
+            removed = removed + 1
+        end
+    end
+    return removed
+end
+
+function LV.Store:RepairSyntheticPlayerAliases(record)
+    if type(record) ~= "table" then
+        return 0, 0
+    end
+    record.mig = type(record.mig) == "table" and record.mig or {}
+    if (tonumber(record.mig.palias) or 0) >= PLAYER_ALIAS_MIGRATION_VERSION then
+        return 0, 0
+    end
+
+    local evidence = {}
+    local raidCandidates = {}
+    local function rememberEvidence(nameID, candidates)
+        nameID = tonumber(nameID)
+        if nameID and storedPlayerName(record, nameID) ~= "" then
+            evidence[nameID] = true
+            if candidates then
+                addPlayerCandidate(record, candidates, nameID)
+            end
+        end
+    end
+
+    for nameID in pairs(record.gr or {}) do
+        rememberEvidence(nameID)
+    end
+    for _, team in ipairs((record.cfg and record.cfg.teams) or {}) do
+        for nameID in pairs((type(team) == "table" and team.ro) or {}) do
+            rememberEvidence(nameID)
+        end
+    end
+    for raidID, raid in pairs(record.r or {}) do
+        if type(raid) == "table" then
+            local candidates = {}
+            raidCandidates[tostring(raidID)] = candidates
+            for _, map in ipairs({ raid.p, raid.b, raid.late, raid.out, raid.noshow }) do
+                for nameID in pairs(map or {}) do
+                    rememberEvidence(nameID, candidates)
+                end
+            end
+            for _, kill in ipairs(raid.kills or {}) do
+                if type(kill) == "table" then
+                    for _, list in ipairs({ kill.p, kill.bench, kill.late, kill.out, kill.noshow }) do
+                        for _, nameID in pairs(list or {}) do
+                            rememberEvidence(nameID, candidates)
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    local aliases = {}
+    local conflicts = {}
+    local repaired = 0
+    local function recordAlias(fromID, toID)
+        if aliases[fromID] and aliases[fromID] ~= toID then
+            conflicts[fromID] = true
+        else
+            aliases[fromID] = toID
+        end
+    end
+    local function repairLinkedField(row, field, candidates)
+        local fromID = type(row) == "table" and tonumber(row[field]) or nil
+        local shortKey = fromID and storedPlayerShortKey(record, fromID)
+        local toID = shortKey and uniquePlayerCandidate(candidates or {}, shortKey) or nil
+        if fromID and toID and fromID ~= toID then
+            row[field] = toID
+            recordAlias(fromID, toID)
+            repaired = repaired + 1
+        end
+    end
+
+    for _, row in ipairs(record.l or {}) do
+        if type(row) == "table" then
+            local candidates = raidCandidates[tostring(row.sid or "")]
+            if candidates then
+                repairLinkedField(row, "p", candidates)
+                for _, roll in ipairs(row.rb or {}) do
+                    repairLinkedField(roll, "p", candidates)
+                end
+            end
+        end
+    end
+    for _, row in ipairs(record.t or {}) do
+        if type(row) == "table" then
+            local candidates = raidCandidates[tostring(row.sid or "")]
+            if candidates then
+                repairLinkedField(row, "f", candidates)
+                repairLinkedField(row, "to", candidates)
+            end
+        end
+    end
+
+    for fromID in pairs(conflicts) do
+        aliases[fromID] = nil
+    end
+    for fromID, toID in pairs(aliases) do
+        if not evidence[fromID] then
+            for _, team in ipairs((record.cfg and record.cfg.teams) or {}) do
+                if type(team) == "table" and tonumber(team.rby) == fromID then
+                    team.rby = toID
+                end
+            end
+            for _, raid in pairs(record.r or {}) do
+                if type(raid) == "table" and tonumber(raid.by) == fromID then
+                    raid.by = toID
+                end
+            end
+            for _, row in ipairs(record.l or {}) do
+                if type(row) == "table" and tonumber(row.by) == fromID then
+                    row.by = toID
+                end
+            end
+            for _, row in ipairs(record.t or {}) do
+                if type(row) == "table" and tonumber(row.by) == fromID then
+                    row.by = toID
+                end
+            end
+            for _, override in pairs(record.o or {}) do
+                if type(override) == "table" then
+                    if tonumber(override.main) == fromID then
+                        override.main = toID
+                    end
+                    if tonumber(override.by) == fromID then
+                        override.by = toID
+                    end
+                end
+            end
+            if record.pc and record.pc[fromID] then
+                record.pc[toID] = record.pc[toID] or record.pc[fromID]
+                record.pc[fromID] = nil
+            end
+            if record.o then
+                record.o[fromID] = nil
+            end
+        end
+    end
+
+    local function stillReferenced(nameID)
+        if (record.gr and record.gr[nameID]) or (record.o and record.o[nameID]) or (record.pc and record.pc[nameID]) then
+            return true
+        end
+        for _, team in ipairs((record.cfg and record.cfg.teams) or {}) do
+            if type(team) == "table" and ((team.ro and team.ro[nameID]) or tonumber(team.rby) == nameID) then
+                return true
+            end
+        end
+        for _, raid in pairs(record.r or {}) do
+            if type(raid) == "table" then
+                if tonumber(raid.by) == nameID then
+                    return true
+                end
+                for _, map in ipairs({ raid.p, raid.b, raid.late, raid.out, raid.noshow }) do
+                    if type(map) == "table" and map[nameID] then
+                        return true
+                    end
+                end
+                for _, kill in ipairs(raid.kills or {}) do
+                    if type(kill) == "table" then
+                        for _, list in ipairs({ kill.p, kill.bench, kill.late, kill.out, kill.noshow }) do
+                            for _, candidateID in pairs(list or {}) do
+                                if tonumber(candidateID) == nameID then
+                                    return true
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        for _, row in ipairs(record.l or {}) do
+            if type(row) == "table" then
+                if tonumber(row.p) == nameID or tonumber(row.by) == nameID then
+                    return true
+                end
+                for _, roll in ipairs(row.rb or {}) do
+                    if type(roll) == "table" and tonumber(roll.p) == nameID then
+                        return true
+                    end
+                end
+            end
+        end
+        for _, row in ipairs(record.t or {}) do
+            if type(row) == "table" and (tonumber(row.f) == nameID or tonumber(row.to) == nameID or tonumber(row.by) == nameID) then
+                return true
+            end
+        end
+        for _, override in pairs(record.o or {}) do
+            if type(override) == "table" and (tonumber(override.main) == nameID or tonumber(override.by) == nameID) then
+                return true
+            end
+        end
+        return false
+    end
+
+    local removed = 0
+    for fromID in pairs(aliases) do
+        if not evidence[fromID] and not stillReferenced(fromID) and record.d and record.d.n then
+            record.d.n[fromID] = ""
+            removed = removed + 1
+        end
+    end
+    record.mig.palias = PLAYER_ALIAS_MIGRATION_VERSION
+    return repaired, removed
 end
 
 function LV.Store:Initialize()
@@ -207,9 +458,14 @@ function LV.Store:GuildRecord(guildKey)
     record.next.loot = tonumber(record.next.loot) or 1
     record.next.trade = tonumber(record.next.trade) or 1
     self:NormalizeTeams(record)
+    local repairedAliases, removedAliases = self:RepairSyntheticPlayerAliases(record)
     self:NormalizeHistoricalRaidTimes(record)
 
     self:EnsureReverseMaps(guildKey, record)
+    if repairedAliases > 0 or removedAliases > 0 then
+        LV:Print("Repaired " .. tostring(repairedAliases) .. " player reference(s) and removed "
+            .. tostring(removedAliases) .. " synthetic player alias(es).")
+    end
     return record
 end
 
@@ -602,6 +858,196 @@ function LV.Store:AddRosterMember(guildKey, name, fields)
     end
 
     return entry
+end
+
+function LV.Store:PlayerRows(guildKey)
+    local record = self:GuildRecord(guildKey)
+    local rowsByID = {}
+    local function include(nameID, source)
+        nameID = tonumber(nameID)
+        local fullName = nameID and storedPlayerName(record, nameID) or ""
+        if fullName == "" then
+            return
+        end
+        local row = rowsByID[nameID]
+        if not row then
+            row = {
+                id = nameID,
+                fullName = fullName,
+                name = LV.Util:ShortName(fullName),
+            }
+            rowsByID[nameID] = row
+        end
+        row[source] = true
+    end
+
+    for nameID in pairs((record and record.gr) or {}) do
+        include(nameID, "guild")
+    end
+    for _, team in ipairs((record and record.cfg and record.cfg.teams) or {}) do
+        if type(team) == "table" then
+            for nameID in pairs(team.ro or {}) do
+                include(nameID, "roster")
+            end
+            include(team.rby, "history")
+        end
+    end
+    for _, raid in pairs((record and record.r) or {}) do
+        if type(raid) == "table" then
+            include(raid.by, "history")
+            for _, map in ipairs({ raid.p, raid.b, raid.late, raid.out, raid.noshow }) do
+                for nameID in pairs(map or {}) do
+                    include(nameID, "attendance")
+                end
+            end
+            for _, kill in ipairs(raid.kills or {}) do
+                if type(kill) == "table" then
+                    for _, list in ipairs({ kill.p, kill.bench, kill.late, kill.out, kill.noshow }) do
+                        for _, nameID in pairs(list or {}) do
+                            include(nameID, "attendance")
+                        end
+                    end
+                end
+            end
+        end
+    end
+    for _, row in ipairs((record and record.l) or {}) do
+        if type(row) == "table" then
+            include(row.p, "loot")
+            include(row.by, "history")
+            for _, roll in ipairs(row.rb or {}) do
+                if type(roll) == "table" then
+                    include(roll.p, "loot")
+                end
+            end
+        end
+    end
+    for _, row in ipairs((record and record.t) or {}) do
+        if type(row) == "table" then
+            include(row.f, "trade")
+            include(row.to, "trade")
+            include(row.by, "history")
+        end
+    end
+    for nameID, override in pairs((record and record.o) or {}) do
+        include(nameID, "override")
+        if type(override) == "table" then
+            include(override.main, "override")
+            include(override.by, "history")
+        end
+    end
+
+    local rows = {}
+    for _, row in pairs(rowsByID) do
+        rows[#rows + 1] = row
+    end
+    table.sort(rows, function(a, b)
+        return a.fullName:lower() < b.fullName:lower()
+    end)
+    return rows
+end
+
+function LV.Store:DeletePlayer(guildKey, nameID)
+    local record = self:GuildRecord(guildKey)
+    nameID = tonumber(nameID)
+    local fullName = record and nameID and storedPlayerName(record, nameID) or ""
+    if fullName == "" then
+        return false, "Player not found."
+    end
+
+    local removed = { raids = 0, loot = 0, trades = 0, links = 0 }
+    record.gr[nameID] = nil
+    record.pc[nameID] = nil
+    record.o[nameID] = nil
+
+    for _, team in ipairs((record.cfg and record.cfg.teams) or {}) do
+        if type(team) == "table" then
+            if type(team.ro) == "table" and team.ro[nameID] then
+                team.ro[nameID] = nil
+                removed.links = removed.links + 1
+            end
+            if tonumber(team.rby) == nameID then
+                team.rby = nil
+            end
+        end
+    end
+    for _, raid in pairs(record.r or {}) do
+        if type(raid) == "table" then
+            local removedFromRaid = false
+            for _, map in ipairs({ raid.p, raid.b, raid.late, raid.out, raid.noshow }) do
+                if type(map) == "table" and map[nameID] ~= nil then
+                    map[nameID] = nil
+                    removedFromRaid = true
+                end
+            end
+            for _, kill in ipairs(raid.kills or {}) do
+                if type(kill) == "table" then
+                    for _, list in ipairs({ kill.p, kill.bench, kill.late, kill.out, kill.noshow }) do
+                        if removePlayerFromArray(list, nameID) > 0 then
+                            removedFromRaid = true
+                        end
+                    end
+                end
+            end
+            if tonumber(raid.by) == nameID then
+                raid.by = nil
+            end
+            if removedFromRaid then
+                removed.raids = removed.raids + 1
+            end
+        end
+    end
+
+    local removedLootIDs = {}
+    for index = #(record.l or {}), 1, -1 do
+        local row = record.l[index]
+        if type(row) == "table" and tonumber(row.p) == nameID then
+            if row.id then
+                removedLootIDs[tostring(row.id)] = true
+            end
+            table.remove(record.l, index)
+            removed.loot = removed.loot + 1
+        elseif type(row) == "table" then
+            if tonumber(row.by) == nameID then
+                row.by = nil
+            end
+            for rollIndex = #(row.rb or {}), 1, -1 do
+                if type(row.rb[rollIndex]) == "table" and tonumber(row.rb[rollIndex].p) == nameID then
+                    table.remove(row.rb, rollIndex)
+                    removed.links = removed.links + 1
+                end
+            end
+        end
+    end
+    for index = #(record.t or {}), 1, -1 do
+        local row = record.t[index]
+        if type(row) == "table" and (
+            tonumber(row.f) == nameID
+            or tonumber(row.to) == nameID
+            or removedLootIDs[tostring(row.loot or "")]
+        ) then
+            table.remove(record.t, index)
+            removed.trades = removed.trades + 1
+        elseif type(row) == "table" and tonumber(row.by) == nameID then
+            row.by = nil
+        end
+    end
+    for _, override in pairs(record.o or {}) do
+        if type(override) == "table" then
+            if tonumber(override.main) == nameID then
+                override.main = nil
+                override.tag = "guild"
+                removed.links = removed.links + 1
+            end
+            if tonumber(override.by) == nameID then
+                override.by = nil
+            end
+        end
+    end
+
+    record.d.n[nameID] = ""
+    self:EnsureReverseMaps(guildKey, record)
+    return true, fullName, removed
 end
 
 function LV.Store:SetPlayerClass(guildKey, nameOrID, className)
