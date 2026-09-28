@@ -1,7 +1,7 @@
 local addonName, LV = ...
 
 LV.name = addonName
-LV.version = "12.1.11"
+LV.version = "12.1.12"
 LV.frame = CreateFrame("Frame")
 LV.eventHandlers = {}
 LV.modules = {}
@@ -103,6 +103,7 @@ function LV:PrintHelp()
     self:Print("/lv wipe_loot - wipe loot history for the active raid")
     self:Print("/lv rebuild_loot - rebuild active raid loot from Blizzard /loot history")
     self:Print("/lv debug_loot_window [search] - print Blizzard /loot roll fields")
+    self:Print("/lv sync_debug - show the current partner's guild rank lookup")
     self:Print("/lv help - show this help")
 end
 
@@ -160,6 +161,11 @@ SlashCmdList.LOOTVIEWER = function(input)
 
     if command == "debug_loot_window" then
         LV.Loot:DebugLootWindow(rest or "")
+        return
+    end
+
+    if command == "sync_debug" then
+        LV.DataSync:PrintSyncDebug()
         return
     end
 

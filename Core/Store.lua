@@ -848,6 +848,15 @@ function LV.Store:AddRosterMember(guildKey, name, fields)
         record.gr[nameID] = entry
     end
 
+    -- Rank freshness must not advance when raid imports only remember a name
+    -- or class. Those observations say nothing about promotions/demotions.
+    local rankChanged = fields and fields.r ~= nil
+        and (entry.r ~= fields.r or (fields.rn ~= nil and entry.rn ~= fields.rn))
+    if fields and fields.r ~= nil then
+        entry.rts = math.max(LV.Util:ServerNow(), (tonumber(entry.rts or entry.ts) or 0) + (rankChanged and 1 or 0))
+    elseif entry.r ~= nil and not entry.rts then
+        entry.rts = tonumber(entry.ts) or 0
+    end
     for key, value in pairs(fields or {}) do
         entry[key] = value
     end
@@ -855,6 +864,10 @@ function LV.Store:AddRosterMember(guildKey, name, fields)
 
     if entry.c and entry.c ~= "" then
         self:SetPlayerClass(guildKey, nameID, entry.c)
+    end
+
+    if rankChanged and LV.RosterSync and LV.RosterSync.QueueMetadataUpdate then
+        LV.RosterSync:QueueMetadataUpdate(guildKey, nameID, "members")
     end
 
     return entry

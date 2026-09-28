@@ -4913,6 +4913,12 @@ function LV.UI:ShowSyncComparison(session)
         end
     end)
     selectNone:SetPoint("LEFT", selectAll, "RIGHT", 8, 0)
+    local rosterStatus = LV.Widgets:Text(modal, LV.DataSync:RosterStatusText(session), "small")
+    rosterStatus:SetPoint("TOPLEFT", 235, -78)
+    rosterStatus:SetWidth(675)
+    rosterStatus:SetHeight(38)
+    rosterStatus:SetWordWrap(true)
+    rosterStatus:SetTextColor(unpack(LV.Widgets.colors.textSecondary))
     local status = LV.Widgets:Text(modal, session.status or "Select the raids you want to import.")
     status:SetPoint("TOPLEFT", 20, -530)
     status:SetWidth(740)
@@ -4942,6 +4948,7 @@ function LV.UI:ShowSyncComparison(session)
     layer.session = session
     layer.modal = modal
     modal.status = status
+    modal.rosterStatus = rosterStatus
     modal.progress = progress
     modal.syncButton = sync
     modal.selectableCount = #leftRows
@@ -4960,6 +4967,9 @@ function LV.UI:RefreshSyncComparisonProgress()
     end
     local current, total, status = LV.DataSync:ProgressForSession(session)
     modal.status:SetText(status ~= "" and status or "Select the raids you want to import.")
+    if modal.rosterStatus then
+        modal.rosterStatus:SetText(LV.DataSync:RosterStatusText(session))
+    end
     self:UpdateProgressBar(modal.progress, current, total)
     local busy = session.genericCurrent ~= nil or session.genericReceiving ~= nil
         or session.requestPending == true
@@ -4993,7 +5003,7 @@ function LV.UI:RenderDataSync()
     end, "primary")
     send:SetPoint("LEFT", target, "RIGHT", 12, 0)
 
-    local hint = LV.Widgets:Text(panel, "Exchanges a small two-month raid list first. Each player chooses which missing raids to import; only selected attendance, kills, loot, and trades are transferred.")
+    local hint = LV.Widgets:Text(panel, "Automatically syncs roster assignments, main/alt links, and known guild ranks from authorized publishers. Compare the last two months of raids and choose which raid details to import.")
     hint:SetTextColor(unpack(LV.Widgets.colors.muted))
     hint:SetPoint("TOPLEFT", 24, -88)
     hint:SetPoint("TOPRIGHT", panel, "TOPRIGHT", -24, -88)

@@ -1,5 +1,15 @@
 # Changelog
 
+## 12.1.12 - 2026-09-28
+
+1. Guild sync now shares roster assignments, main and alt links, and known guild ranks when an authorized player accepts a sync invite.
+2. Roster changes now reach online guildmates automatically, including team assignments, promotions, demotions, roles, main swaps, and removed alt links.
+3. Roster updates respect guild authority settings and keep the newest edit when players have changed the same data.
+4. Logging in and joining a raid now catch up main and alt links and known guild ranks, with retries when Blizzard has not finished loading the needed data.
+5. The raid comparison now shows the roster sync result and explains when the other player needs an addon update.
+6. Improved cross-realm roster matching and guild-rank lookup during sync.
+7. Added `/lv sync_debug` to help diagnose a guild-rank lookup that cannot be resolved.
+
 ## 12.1.11 - 2026-09-14
 
 1. Added a Players tab under Configuration with player search and an optional Show Pugs filter.

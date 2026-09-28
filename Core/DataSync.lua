@@ -159,7 +159,7 @@ local function transferTime()
 end
 
 local function samePlayer(left, right)
-    return LV.Util:Trim(left):lower() == LV.Util:Trim(right):lower()
+    return LV.Guild:NormalizeMemberName(left):lower() == LV.Guild:NormalizeMemberName(right):lower()
 end
 
 local function raidKillSignature(raid)
@@ -795,11 +795,17 @@ function LV.DataSync:BuildManifest(guildKey)
         end
     end
 
+    local roster = LV.RosterSync:BuildSyncSnapshot(guildKey)
     local lines = {
         line("MV", {
             { "v", SYNC_PROTOCOL_VERSION },
             { "g", guildKey },
             { "cutoff", cutoff },
+            { "roster", roster.version },
+            { "publisher", boolString(roster.publisher) },
+            { "publisherReason", roster.reason },
+            { "publisherMemberID", roster.memberID },
+            { "rosterReceipt", 1 },
         }),
     }
     for _, item in ipairs(rows) do
@@ -819,17 +825,64 @@ function LV.DataSync:BuildManifest(guildKey)
             { "sig", raidContentSignature(guildKey, record, item.id, raid) },
         })
     end
+    -- Optional records keep raid comparison compatible with older clients.
+    -- They travel in the reliable handshake even when no raids are selected.
+    self:AppendRosterRecords(lines, roster)
     return table.concat(lines, "\n"), #rows
 end
 
+function LV.DataSync:AppendRosterRecords(lines, roster)
+    for _, team in ipairs(roster.teams) do
+        lines[#lines + 1] = line("RT", { { "id", team.id }, { "name", team.name },
+            { "rt", team.rt }, { "by", team.by }, { "count", #team.rows } })
+        for _, row in ipairs(team.rows) do
+            lines[#lines + 1] = line("RP", { { "team", team.id }, { "n", row.n },
+                { "t", row.t }, { "p", row.p }, { "s", row.s }, { "c", row.c } })
+        end
+    end
+    for _, row in ipairs(roster.overrides) do
+        lines[#lines + 1] = line("RO", { { "n", row.n }, { "tag", row.tag },
+            { "main", row.main }, { "ts", row.ts }, { "by", row.by } })
+    end
+    for _, row in ipairs(roster.members) do
+        lines[#lines + 1] = line("RG", { { "n", row.n }, { "c", row.c },
+            { "r", row.r }, { "rn", row.rn }, { "rt", row.rt } })
+    end
+end
+
+function LV.DataSync:EncodeRosterSnapshot(guildKey, roster)
+    local lines = { line("MV", { { "g", guildKey }, { "roster", roster.version },
+        { "publisher", boolString(roster.publisher) }, { "publisherReason", roster.reason },
+        { "publisherMemberID", roster.memberID } }) }
+    self:AppendRosterRecords(lines, roster)
+    return table.concat(lines, "\n")
+end
+
 function LV.DataSync:ParseManifest(payload)
-    local manifest = { raids = {}, byID = {} }
+    local manifest = { raids = {}, byID = {}, roster = { teams = {}, overrides = {}, members = {} } }
+    local rosterTeams = {}
     for raw in tostring(payload or ""):gmatch("[^\n]+") do
         local kind, fields = parseLine(raw)
         if kind == "MV" then
             manifest.version = tonumber(fields.v) or 0
             manifest.guildKey = fields.g
             manifest.cutoff = tonumber(fields.cutoff) or 0
+            manifest.roster.version = tonumber(fields.roster)
+            manifest.roster.publisher = parseBool(fields.publisher)
+            manifest.roster.memberID = tonumber(fields.publisherMemberID)
+            manifest.roster.reason = fields.publisherReason ~= "" and fields.publisherReason or nil
+            manifest.roster.receipt = parseBool(fields.rosterReceipt)
+        elseif kind == "RT" and fields.id and fields.id ~= "" then
+            fields.rows = {}
+            rosterTeams[fields.id] = fields
+            manifest.roster.teams[#manifest.roster.teams + 1] = fields
+        elseif kind == "RP" and rosterTeams[fields.team] then
+            local rows = rosterTeams[fields.team].rows
+            rows[#rows + 1] = fields
+        elseif kind == "RO" then
+            manifest.roster.overrides[#manifest.roster.overrides + 1] = fields
+        elseif kind == "RG" then
+            manifest.roster.members[#manifest.roster.members + 1] = fields
         elseif kind == "MR" and fields.id and fields.id ~= "" then
             local entry = {
                 id = fields.id,
@@ -1230,7 +1283,7 @@ function LV.DataSync:AcceptInvite(data)
     LV.Comms:SendWhisper("A", data.sender, { data.token, data.guildKey, SYNC_PROTOCOL_VERSION })
     if self.inbound.selective then
         local manifest = self:BuildManifest(data.guildKey)
-        self:QueueGenericTransfer(self.inbound, "V", manifest, "Sending raid comparison...")
+        self:QueueGenericTransfer(self.inbound, "V", manifest, "Sending raid comparison and roster...")
     end
     self:RefreshUI()
 end
@@ -1459,7 +1512,124 @@ function LV.DataSync:RequestSelected(session, selected)
     return true, count
 end
 
+function LV.DataSync:RosterStatusText(session)
+    local partner = LV.Util:ShortName(self:GenericTarget(session))
+    local received = session.rosterStatus or "Waiting for roster data..."
+    local sent = session.rosterSentStatus or "Waiting for confirmation..."
+    if session.remoteManifest and not session.remoteManifest.roster.receipt then
+        sent = "Partner needs an update to confirm receipt."
+    end
+    return "From " .. partner .. ": " .. received .. "\nTo " .. partner .. ": " .. sent
+end
+
+function LV.DataSync:CancelRosterWait(session)
+    local pending = session and session.rosterPending
+    if pending and pending.ticker then pending.ticker:Cancel() end
+    if session then session.rosterPending = nil end
+end
+
+function LV.DataSync:PrintSyncDebug()
+    local actual = LV.Guild:ActualInfo()
+    local authority = LV.Guild:EffectiveAuthority()
+    LV:Print("Sync " .. tostring(LV.version or "unknown") .. "; player=" .. LV.Util:PlayerFullName()
+        .. "; guild=" .. tostring(actual and actual.key) .. "; authority="
+        .. tostring(authority and authority.mode) .. " " .. tostring(authority and authority.rankMin)
+        .. "-" .. tostring(authority and authority.rankMax))
+    for _, direction in ipairs({ "inbound", "outbound" }) do
+        local session = self[direction]
+        if session then
+            local peer = self:GenericTarget(session)
+            local roster = session.remoteManifest and session.remoteManifest.roster
+            local rank = LV.Guild:RosterMemberRank(session.guildKey, peer, roster and roster.memberID)
+            local detail = LV.Guild.lastRankLookup
+            local ok, count = pcall(function() return GetNumGuildMembers and GetNumGuildMembers() end)
+            LV:Print(direction .. " peer=" .. LV.Guild:NormalizeMemberName(peer)
+                .. "; rank=" .. tostring(rank) .. "; memberID=" .. tostring(roster and roster.memberID)
+                .. "; localID=" .. tostring(LV.Guild.clubMemberIDs
+                    and LV.Guild.clubMemberIDs[session.guildKey .. "|" .. LV.Guild:NormalizeMemberName(peer):lower()])
+                .. "; club=" .. tostring(LV.Guild:GuildClubID())
+                .. "; lookup=" .. (rank ~= nil and "rank found" or tostring(detail and detail.club))
+                .. "; legacy API=" .. type(GetGuildRosterInfo)
+                .. "; legacy rows=" .. tostring(ok and count or "unavailable"))
+            if rank == nil and detail and detail.clubMember then
+                local member = detail.clubMember
+                local readable, text = pcall(function()
+                    return "Local club ID " .. tostring(member.id) .. " returned name="
+                        .. tostring(member.name):gsub("|", "||") .. "; rank order=" .. tostring(member.rankOrder)
+                end)
+                if readable then LV:Print(text) end
+            end
+        end
+    end
+end
+
+function LV.DataSync:ApplyRosterManifest(session, snapshot, sender, canWait)
+    local counts, status, reasonCode = LV.RosterSync:ApplySyncSnapshot(session.guildKey, sender, snapshot)
+    if reasonCode == "rankUnavailable" and canWait and C_Timer and C_Timer.NewTicker then
+        session.rosterStatus = "Waiting for Blizzard to load partner's guild rank..."
+        if not session.rosterPending then
+            local pending = { snapshot = snapshot, sender = sender, expires = LV.Util:Now() + 20, clubSearch = {} }
+            session.rosterPending = pending
+            pending.ticker = C_Timer.NewTicker(1, function()
+                if (self.inbound ~= session and self.outbound ~= session)
+                    or session.state == "error" or session.state == "declined"
+                    or LV.Guild:CurrentKey() ~= session.guildKey then
+                    self:CancelRosterWait(session)
+                    return
+                end
+                local expired = LV.Util:Now() >= pending.expires
+                local clubRank, clubStatus = LV.Guild:ClubMemberRank(session.guildKey, sender, snapshot.memberID)
+                local found = clubRank ~= nil
+                if not found and not expired and clubStatus ~= "club rank not loaded" then
+                    found = LV.Guild:FindSyncClubMember(session.guildKey, sender, pending.clubSearch)
+                end
+                if pending.needsCheck or found or expired then
+                    pending.needsCheck = nil
+                    self:ApplyRosterManifest(session, pending.snapshot, pending.sender, not expired)
+                end
+            end)
+            if not LV.Guild:RequestSyncPartnerRank(session.guildKey) and not LV.Guild:GuildClubID() then
+                self:CancelRosterWait(session)
+                self:ApplyRosterManifest(session, snapshot, sender, false)
+                return
+            end
+        end
+        self:RefreshUI()
+        return
+    end
+
+    self:CancelRosterWait(session)
+    session.rosterStatus = status
+    if reasonCode == "rankUnavailable" then
+        session.rosterStatus = "Guild rank unavailable; /lv sync_debug for details."
+    end
+    if counts then
+        session.rosterImported = session.rosterImported or { teams = 0, links = 0, members = 0 }
+        for key, count in pairs(counts) do
+            session.rosterImported[key] = session.rosterImported[key] + count
+        end
+        local total = session.rosterImported
+        session.rosterStatus = string.format("Roster synced: %d teams, %d main/alt tags, %d members updated.",
+            total.teams, total.links, total.members)
+    end
+    if snapshot.receipt and session.token then
+        self:QueueGenericTransfer(session, "Y", line("RC", {
+            { "ok", boolString(counts ~= nil) }, { "status", session.rosterStatus },
+        }), "Confirming roster sync...")
+    end
+    self:RefreshUI()
+end
+
 function LV.DataSync:HandleGenericPayload(session, transferKind, payload, sender)
+    if transferKind == "Y" then
+        local kind, fields = parseLine(payload)
+        if kind == "RC" then
+            session.rosterSentStatus = fields.status
+            session.rosterSentAccepted = parseBool(fields.ok)
+            self:RefreshUI()
+        end
+        return
+    end
     if transferKind == "V" then
         local manifest = self:ParseManifest(payload)
         if manifest.version ~= SYNC_PROTOCOL_VERSION or manifest.guildKey ~= session.guildKey then
@@ -1469,6 +1639,8 @@ function LV.DataSync:HandleGenericPayload(session, transferKind, payload, sender
             return
         end
         session.remoteManifest = manifest
+        self:CancelRosterWait(session)
+        self:ApplyRosterManifest(session, manifest.roster, sender, true)
         session.state = "ready"
         session.status = "Raid comparison ready. Select only the raids you want to import."
         self:ShowComparison(session)
@@ -2703,7 +2875,8 @@ function LV.DataSync:HandleMessage(parts, sender)
                 outbound.twoWay = false
                 outbound.status = tostring(sender or outbound.target)
                     .. " accepted. Exchanging raid summaries..."
-                self:QueueGenericTransfer(outbound, "V", outbound.payload, "Sending raid comparison...")
+                outbound.payload, outbound.manifestCount = self:BuildManifest(outbound.guildKey)
+                self:QueueGenericTransfer(outbound, "V", outbound.payload, "Sending raid comparison and roster...")
                 return
             end
             outbound.status = tostring(sender or outbound.target) .. " accepted. Preparing transfer..."
@@ -3066,8 +3239,31 @@ end)
 
 LV:RegisterEvent("PLAYER_GUILD_UPDATE", repairCurrentGuildOrphans)
 
+LV:RegisterEvent("GUILD_ROSTER_UPDATE", function()
+    -- Coalesce Blizzard's repeated load events. Only a pending manual sync
+    -- rechecks its selected partner on the next tick; no roster is rebuilt.
+    for _, direction in ipairs({ "inbound", "outbound" }) do
+        local session = LV.DataSync[direction]
+        if session and session.rosterPending then session.rosterPending.needsCheck = true end
+    end
+end)
+
+local function syncClubUpdated()
+    if LV.RosterSync.publisherCache then wipe(LV.RosterSync.publisherCache) end
+    for _, direction in ipairs({ "inbound", "outbound" }) do
+        local session = LV.DataSync[direction]
+        if session and session.rosterPending then
+            session.rosterPending.needsCheck = true
+            if session.rosterPending.clubSearch.complete then session.rosterPending.clubSearch = {} end
+        end
+    end
+end
+LV:RegisterEvent("CLUB_MEMBERS_UPDATED", syncClubUpdated)
+LV:RegisterEvent("CLUB_MEMBER_UPDATED", syncClubUpdated)
+LV:RegisterEvent("CLUB_MEMBER_REMOVED", syncClubUpdated)
+
 StaticPopupDialogs[LV.Constants.SYNC_INVITE_PROMPT] = {
-    text = "%s wants to compare LootViewer raid data for %s.\nExchange a small raid list, then choose which missing raids to import? Raid details are sent only after selection.",
+    text = "%s wants to sync LootViewer data for %s.\nAutomatically receive roster, main/alt, and rank updates from authorized publishers, then choose which missing raids to import?",
     button1 = ACCEPT,
     button2 = "Decline",
     timeout = 0,

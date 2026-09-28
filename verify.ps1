@@ -86,9 +86,13 @@ if ($missing.Count -gt 0) {
 }
 
 $coreRuntimeLuaFiles = @(
-    Get-ChildItem -LiteralPath $root -File -Filter '*.lua' -Recurse |
+    Get-ChildItem -LiteralPath $root -Force |
+        Where-Object { $_.Name -notin @('dist', '.build', 'Options', 'Docs', '.git', '.agents', '.codex') } |
+        ForEach-Object {
+            if ($_.PSIsContainer) { Get-ChildItem -LiteralPath $_.FullName -File -Filter '*.lua' -Recurse }
+            elseif ($_.Extension -eq '.lua') { $_ }
+        } |
         ForEach-Object { $_.FullName.Substring($root.Length).TrimStart([char[]]'\/').Replace('\', '/') } |
-        Where-Object { $_ -notmatch '^(dist|\.build|Options)/' } |
         Sort-Object
 )
 $unreferencedLua = @(Compare-Object -ReferenceObject ($expectedTocEntries | Sort-Object) -DifferenceObject $coreRuntimeLuaFiles)
@@ -120,10 +124,12 @@ if ($optionsTocEntries.Count -ne 1 -or $optionsTocEntries[0] -ne 'Configuration.
     throw "LootViewer_Options.toc has unexpected runtime files."
 }
 
-foreach ($runtimeFile in (Get-ChildItem -LiteralPath $root -File -Filter '*.lua' -Recurse)) {
-    $firstLine = Get-Content -LiteralPath $runtimeFile.FullName -TotalCount 1
+$runtimeLuaPaths = @($coreRuntimeLuaFiles) + @($optionsTocEntries | ForEach-Object { "Options/$_" })
+foreach ($runtimePath in $runtimeLuaPaths) {
+    $runtimeFile = Join-Path $root $runtimePath
+    $firstLine = Get-Content -LiteralPath $runtimeFile -TotalCount 1
     if ($firstLine -match '^(Exit code:|Wall time:|Output:|Script (completed|failed))') {
-        throw "Tool transcript text was prepended to Lua source at $($runtimeFile.FullName):1"
+        throw "Tool transcript text was prepended to Lua source at ${runtimeFile}:1"
     }
 }
 

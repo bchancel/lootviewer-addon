@@ -9,17 +9,170 @@ local ROSTER_KINDS = {
     LRP = true,
     LRE = true,
     LRU = true,
+    LRM = true,
 }
 
 local SNAPSHOT_ELECTION_DELAY = 1.5
+local ROSTER_TAGS = { guild = true, alt = true, pug = true }
+local ROSTER_TYPES = { raider = true, trial = true, helper = true, social = true }
+
+local function newerRevision(revision, author, currentRevision, currentAuthor)
+    revision, currentRevision = tonumber(revision) or 0, tonumber(currentRevision) or 0
+    if revision ~= currentRevision then
+        return revision > currentRevision
+    end
+    -- Stable ties make simultaneous edits converge in either sync direction.
+    return tostring(author or ""):lower() < tostring(currentAuthor or ""):lower()
+end
+
+function LV.RosterSync:BuildSyncSnapshot(guildKey, selection)
+    local actual = LV.Guild:ActualInfo()
+    local snapshot = { version = 1, teams = {}, overrides = {}, members = {} }
+    snapshot.publisher = false
+    if actual and actual.key == guildKey then
+        snapshot.publisher, snapshot.reason = LV.Guild:CanPublishRoster()
+    end
+    if not snapshot.publisher then
+        return snapshot
+    end
+    snapshot.memberID = LV.Guild:OwnClubMemberID()
+    local record = LV.Store:GuildRecord(guildKey)
+    local function name(id)
+        return record.d.n[tonumber(id)] or ""
+    end
+    for _, team in ipairs(not selection and record.cfg.teams or {}) do
+        if not team.excludeSync and not LV.Store:IsGlobalPugTeam(team) and (tonumber(team.rt) or 0) > 0 then
+            local rows = {}
+            for nameID, assignment in pairs(team.ro or {}) do
+                local fullName = name(nameID)
+                if fullName ~= "" then
+                    local id = tonumber(nameID)
+                    local className = record.d.s[record.pc[id]] or (record.gr[id] and record.gr[id].c)
+                    rows[#rows + 1] = { n = fullName, t = assignment.t, p = assignment.p,
+                        s = assignment.s, c = className }
+                end
+            end
+            table.sort(rows, function(a, b) return a.n < b.n end)
+            local author = name(team.rby)
+            snapshot.teams[#snapshot.teams + 1] = { id = team.id, name = team.name,
+                rt = team.rt, by = author ~= "" and author or LV.Util:PlayerFullName(), rows = rows }
+        end
+    end
+    for nameID in pairs(selection and selection.overrides or record.o or {}) do
+        local override = record.o[nameID]
+        if override and ROSTER_TAGS[override.tag] and (tonumber(override.ts) or 0) > 0 and name(nameID) ~= "" then
+            snapshot.overrides[#snapshot.overrides + 1] = { n = name(nameID), tag = override.tag,
+                main = name(override.main), ts = override.ts, by = name(override.by) }
+        end
+    end
+    for nameID in pairs(selection and selection.members or record.gr or {}) do
+        local entry = record.gr[nameID]
+        if entry and name(nameID) ~= "" then
+            snapshot.members[#snapshot.members + 1] = { n = name(nameID), c = entry.c,
+                r = entry.r, rn = entry.rn, rt = entry.rts or entry.ts or 0 }
+        end
+    end
+    table.sort(snapshot.overrides, function(a, b) return a.n < b.n end)
+    table.sort(snapshot.members, function(a, b) return a.n < b.n end)
+    return snapshot
+end
+
+function LV.RosterSync:ApplySyncSnapshot(guildKey, sender, snapshot)
+    local counts = { teams = 0, links = 0, members = 0 }
+    if not snapshot or snapshot.version ~= 1 then
+        return nil, "Partner must update LootViewer to sync roster changes."
+    end
+    -- Recheck authority once per complete transfer, before importing ranks.
+    if not snapshot.publisher then
+        return nil, "Not sent: " .. (snapshot.reason or "partner's publishing check declined")
+    end
+    local allowed, reason, reasonCode = LV.Guild:CanAcceptRosterPublisher(guildKey, sender, snapshot.memberID)
+    if not allowed then
+        return nil, "Not accepted: " .. (reason or "publisher could not be verified"), reasonCode
+    end
+    local record = LV.Store:GuildRecord(guildKey)
+    for _, incoming in ipairs(snapshot.teams or {}) do
+        local team = LV.Store:GetTeamByID(record, incoming.id)
+        local revision = tonumber(incoming.rt) or 0
+        local author = LV.Util:Trim(incoming.by)
+        local oldAuthor = team and LV.Store:DictionaryValue(guildKey, "n", team.rby) or ""
+        if oldAuthor == "" then oldAuthor = LV.Util:PlayerFullName() end
+        local seen, valid = {}, revision > 0 and incoming.id and incoming.id ~= ""
+            and not LV.Store:IsGlobalPugTeam(incoming.id)
+            and type(incoming.rows) == "table" and #incoming.rows == tonumber(incoming.count)
+        for _, row in ipairs(incoming.rows or {}) do
+            local key = LV.Util:Trim(row.n):lower()
+            if key == "" or seen[key] or not ROSTER_TYPES[row.t] then valid = false end
+            seen[key] = true
+        end
+        if valid and (not team or not team.excludeSync)
+            and (not team or newerRevision(revision, author, team.rt, oldAuthor)) then
+            if not team then
+                team = { id = incoming.id, name = incoming.name, ro = {}, schedules = {} }
+                record.cfg.teams[#record.cfg.teams + 1] = team
+            end
+            -- Replace the complete team, including removals and an empty roster.
+            local roster = LV.Store:TeamRoster(guildKey, team.id)
+            wipe(roster)
+            for _, row in ipairs(incoming.rows) do
+                local nameID = LV.Store:NameID(guildKey, row.n)
+                LV.Store:SetTeamRosterPlayer(guildKey, team.id, nameID, row.t, row.p, row.s)
+                if row.c and row.c ~= "" then LV.Store:SetPlayerClass(guildKey, nameID, row.c) end
+            end
+            team.rt, team.rby = revision, LV.Store:NameID(guildKey, author ~= "" and author or sender)
+            counts.teams = counts.teams + 1
+        end
+    end
+    for _, row in ipairs(snapshot.overrides or {}) do
+        local fullName, mainName = LV.Util:Trim(row.n), LV.Util:Trim(row.main)
+        if fullName ~= "" and ROSTER_TAGS[row.tag] and (tonumber(row.ts) or 0) > 0
+            and (row.tag ~= "alt" or (mainName ~= "" and mainName:lower() ~= fullName:lower())) then
+            local nameID = LV.Store:NameID(guildKey, fullName)
+            local current = record.o[nameID]
+            local oldAuthor = current and LV.Store:DictionaryValue(guildKey, "n", current.by) or ""
+            if not current or newerRevision(row.ts, row.by, current.ts, oldAuthor) then
+                record.o[nameID] = { tag = row.tag,
+                    main = row.tag == "alt" and LV.Store:NameID(guildKey, mainName) or nil,
+                    ts = tonumber(row.ts), by = LV.Store:NameID(guildKey, row.by) }
+                counts.links = counts.links + 1
+            end
+        end
+    end
+    for _, row in ipairs(snapshot.members or {}) do
+        local fullName = LV.Util:Trim(row.n)
+        if fullName ~= "" then
+            local nameID = LV.Store:NameID(guildKey, fullName)
+            local entry = record.gr[nameID]
+            local changed = not entry
+            if not entry then
+                entry = {}
+                record.gr[nameID] = entry
+            end
+            local rank, revision = tonumber(row.r), tonumber(row.rt) or 0
+            local oldRevision = tonumber(entry.rts or entry.ts) or 0
+            if rank and rank >= 0 and rank == math.floor(rank) and revision > 0
+                and (entry.r == nil or newerRevision(revision, tostring(rank) .. (row.rn or ""),
+                    oldRevision, tostring(entry.r) .. (entry.rn or ""))) then
+                changed = changed or entry.r ~= rank or entry.rn ~= row.rn
+                entry.r, entry.rn, entry.rts = rank, row.rn, revision
+            end
+            if (not entry.c or entry.c == "") and row.c and row.c ~= "" then
+                entry.c = row.c
+                LV.Store:SetPlayerClass(guildKey, nameID, row.c)
+                changed = true
+            end
+            if changed then counts.members = counts.members + 1 end
+        end
+    end
+    if counts.links > 0 and LV.Raid and LV.Raid.ReconcileGuildLinkedAttendance then
+        LV.Raid:ReconcileGuildLinkedAttendance(guildKey)
+    end
+    return counts, string.format("Roster synced: %d teams, %d main/alt tags, %d members updated.",
+        counts.teams, counts.links, counts.members)
+end
 
 local function normalizedSender(sender)
-    sender = LV.Util:Trim(sender)
-    if sender ~= "" and not sender:find("-", 1, true) then
-        local actual = LV.Guild:ActualInfo()
-        sender = sender .. "-" .. ((actual and actual.realm) or LV.Util:RealmName())
-    end
-    return sender
+    return LV.Guild:NormalizeMemberName(sender)
 end
 
 function LV.RosterSync:IsRosterKind(kind)
@@ -32,7 +185,7 @@ function LV.RosterSync:BumpTeamRevision(team)
     return team.rt
 end
 
-function LV.RosterSync:RequestLatest(force)
+function LV.RosterSync:RequestLatest(force, metadataAttempt)
     local actual = LV.Guild:ActualInfo()
     if not actual or type(IsInGuild) ~= "function" or not IsInGuild() then
         return false
@@ -44,10 +197,128 @@ function LV.RosterSync:RequestLatest(force)
     self.lastRequestAt = now
     self.requestSerial = (tonumber(self.requestSerial) or 0) + 1
     local nonce = tostring(LV.Util:ServerNow()) .. "-" .. tostring(self.requestSerial)
-    return LV.Comms:SendMessage("LRQ", { actual.key, nonce }, "GUILD")
+    self.metadataRequests = self.metadataRequests or {}
+    for token, request in pairs(self.metadataRequests) do
+        if request.expires <= now then self.metadataRequests[token] = nil end
+    end
+    self.metadataRequests[nonce] = { guildKey = actual.key, expires = now + 600, attempt = metadataAttempt or 0 }
+    return LV.Comms:SendMessage("LRQ", { actual.key, nonce, 1 }, "GUILD")
+end
+
+function LV.RosterSync:QueueMetadataUpdate(guildKey, nameID, kind)
+    self.metadataPending = self.metadataPending or {}
+    local pending = self.metadataPending[guildKey]
+    if not pending then
+        pending = { overrides = {}, members = {} }
+        self.metadataPending[guildKey] = pending
+    end
+    pending[kind][nameID] = true
+    if self.metadataFlushScheduled or not C_Timer or not C_Timer.After then return end
+    self.metadataFlushScheduled = true
+    C_Timer.After(0.5, function()
+        self.metadataFlushScheduled = false
+        local batches = self.metadataPending
+        self.metadataPending = {}
+        for key, selection in pairs(batches) do
+            local snapshot = self:BuildSyncSnapshot(key, selection)
+            if snapshot.publisher then
+                self.metadataSerial = (self.metadataSerial or 0) + 1
+                local token = "u" .. tostring(LV.Util:ServerNow()) .. "-" .. tostring(self.metadataSerial)
+                self:SendMetadata(key, token, snapshot)
+            end
+        end
+    end)
+end
+
+function LV.RosterSync:SendMetadata(guildKey, token, snapshot, target, delay)
+    if not snapshot.publisher or not C_Timer or not C_Timer.After then return false end
+    local payload = LV.DataSync:EncodeRosterSnapshot(guildKey, snapshot)
+    -- Account for the complete addon-message envelope, including long guild
+    -- names. Chunk bytes rather than truncating names or UTF-8 rank labels.
+    local hint = snapshot.memberID and ("pm:" .. tostring(snapshot.memberID)) or ""
+    local header = table.concat({ "LRM", guildKey, token, "2048", "2048", "", hint }, "\031")
+    local chunkSize = math.min(180, 255 - #header)
+    if chunkSize < 1 then return false end
+    local total = math.ceil(#payload / chunkSize)
+    if total > 2048 then return false end
+    local channel = target and "WHISPER" or "GUILD"
+    for sequence = 1, total do
+        local chunk = payload:sub((sequence - 1) * chunkSize + 1, sequence * chunkSize)
+        local packet = { guildKey, token, sequence, total, chunk, hint }
+        C_Timer.After((delay or 0) + (sequence - 1) * 0.10, function()
+            local actual = LV.Guild:ActualInfo()
+            if actual and actual.key == guildKey then
+                LV.Comms:SendMessage("LRM", packet, channel, target)
+            end
+        end)
+    end
+    return true
+end
+
+function LV.RosterSync:ReceiveMetadata(parts, sender, channel)
+    local guildKey, token = parts[2], parts[3]
+    local sequence, total = tonumber(parts[4]), tonumber(parts[5])
+    if not token or token == "" or not sequence or not total or total < 1 or total > 2048
+        or sequence < 1 or sequence > total or sequence ~= math.floor(sequence) or total ~= math.floor(total)
+        or type(parts[6]) ~= "string" or #parts[6] > 180 then return end
+    local now = LV.Util:Now()
+    local request = self.metadataRequests and self.metadataRequests[token]
+    if channel == "WHISPER" then
+        if not request or request.guildKey ~= guildKey or request.expires <= now then return end
+    elseif channel ~= "GUILD" or token:sub(1, 1) ~= "u" then
+        return
+    end
+    local key = guildKey .. "|" .. normalizedSender(sender):lower() .. "|" .. token
+    self.metadataIncoming = self.metadataIncoming or {}
+    self.metadataCompleted = self.metadataCompleted or {}
+    for completedKey, expires in pairs(self.metadataCompleted) do
+        if expires <= now then self.metadataCompleted[completedKey] = nil end
+    end
+    if self.metadataCompleted[key] then return end
+    local stage = self.metadataIncoming[key]
+    if not stage then
+        stage = { total = total, chunks = {}, received = 0 }
+        self.metadataIncoming[key] = stage
+        if C_Timer and C_Timer.After then
+            C_Timer.After(math.max(20, total * 0.10 + 15), function()
+                if self.metadataIncoming[key] ~= stage then return end
+                self.metadataIncoming[key] = nil
+                local actual = LV.Guild:ActualInfo()
+                local attempt = request and request.attempt or 0
+                if actual and actual.key == guildKey and attempt < 2 and not self.metadataRetryScheduled then
+                    self.metadataRetryScheduled = true
+                    C_Timer.After(5, function()
+                        self.metadataRetryScheduled = false
+                        if LV.Guild:ActualInfo() and LV.Guild:ActualInfo().key == guildKey then
+                            self:RequestLatest(true, attempt + 1)
+                        end
+                    end)
+                end
+            end)
+        end
+    end
+    if stage.total ~= total then return end
+    if not stage.chunks[sequence] then
+        stage.chunks[sequence] = parts[6]
+        stage.received = stage.received + 1
+    end
+    if stage.received ~= total then return end
+    self.metadataIncoming[key] = nil
+    self.metadataCompleted[key] = now + 600
+    local manifest = LV.DataSync:ParseManifest(table.concat(stage.chunks))
+    if manifest.guildKey ~= guildKey then return end
+    -- The existing automatic protocol owns team snapshots; these packets
+    -- only merge player metadata and never import raid history or settings.
+    manifest.roster.teams = {}
+    local counts = self:ApplySyncSnapshot(guildKey, sender, manifest.roster)
+    if counts and (counts.links > 0 or counts.members > 0) and LV.UI and LV.UI.Refresh then
+        LV.UI:Refresh()
+    end
 end
 
 function LV.RosterSync:QueueWhisper(kind, target, payload, delay)
+    local memberID = LV.Guild:OwnClubMemberID()
+    payload[#payload + 1] = memberID and ("pm:" .. tostring(memberID)) or ""
     local send = function()
         LV.Comms:SendWhisper(kind, target, payload)
     end
@@ -74,7 +345,7 @@ function LV.RosterSync:ScheduleRetry()
     end
 end
 
-function LV.RosterSync:SendSnapshot(target, guildKey, nonce)
+function LV.RosterSync:SendSnapshot(target, guildKey, nonce, includeMetadata)
     local record = LV.Store:GuildRecord(guildKey)
     if not record then
         return false
@@ -130,6 +401,10 @@ function LV.RosterSync:SendSnapshot(target, guildKey, nonce)
             { guildKey, nonce, snapshot.teamID, snapshot.revision }, delay)
         delay = delay + 0.10
     end
+    if includeMetadata then
+        local selection = { overrides = record.o, members = record.gr }
+        self:SendMetadata(guildKey, nonce, self:BuildSyncSnapshot(guildKey, selection), target, delay)
+    end
     return true
 end
 
@@ -145,7 +420,9 @@ function LV.RosterSync:PublishPlayer(guildKey, teamID, nameID, assignment, remov
         return false
     end
     local revision = self:BumpTeamRevision(team)
+    team.rby = LV.Store:NameID(guildKey, LV.Util:PlayerFullName())
     assignment = type(assignment) == "table" and assignment or {}
+    local memberID = LV.Guild:OwnClubMemberID()
     return LV.Comms:SendMessage("LRU", {
         guildKey,
         teamID,
@@ -156,10 +433,11 @@ function LV.RosterSync:PublishPlayer(guildKey, teamID, nameID, assignment, remov
         assignment.p or "",
         assignment.s or "",
         LV.Store:PlayerClass(guildKey, nameID),
+        memberID and ("pm:" .. tostring(memberID)) or "",
     }, "GUILD")
 end
 
-function LV.RosterSync:CanAccept(sender, guildKey)
+function LV.RosterSync:CanAccept(sender, guildKey, memberID)
     sender = normalizedSender(sender)
     if sender == "" then
         return false
@@ -168,10 +446,10 @@ function LV.RosterSync:CanAccept(sender, guildKey)
     local key = guildKey .. "|" .. sender:lower()
     local cached = self.publisherCache[key]
     local now = LV.Util:Now()
-    if cached and now < cached.expires then
+    if not memberID and cached and now < cached.expires then
         return cached.allowed
     end
-    local allowed = LV.Guild:CanAcceptRosterPublisher(guildKey, sender)
+    local allowed = LV.Guild:CanAcceptRosterPublisher(guildKey, sender, memberID)
     self.publisherCache[key] = { allowed = allowed, expires = now + 60 }
     return allowed
 end
@@ -297,20 +575,24 @@ function LV.RosterSync:HandleMessage(parts, sender, channel)
     if not actual or guildKey ~= actual.key then
         return
     end
+    if normalizedSender(sender):lower() == LV.Util:PlayerFullName():lower() then return end
 
     if kind == "LRQ" then
         local nonce = parts[3]
         if channel == "GUILD" and nonce and nonce ~= "" and LV.Guild:CanPublishRoster() then
-            self:SendSnapshot(sender, guildKey, nonce)
+            self:SendSnapshot(sender, guildKey, nonce, tonumber(parts[4]) == 1)
         end
         return
     end
 
-    if not self:CanAccept(sender, guildKey) then
+    local hint = tostring(parts[#parts] or ""):match("^pm:(.+)$")
+    if not self:CanAccept(sender, guildKey, tonumber(hint)) then
         return
     end
 
-    if kind == "LRS" then
+    if kind == "LRM" then
+        self:ReceiveMetadata(parts, sender, channel)
+    elseif kind == "LRS" then
         local nonce, teamID = parts[3], parts[4]
         local revision, expected = tonumber(parts[5]), tonumber(parts[6])
         local record = LV.Store:GuildRecord(guildKey)
@@ -416,6 +698,11 @@ end
 
 LV:RegisterEvent("PLAYER_ENTERING_WORLD", requestRosterSoon)
 LV:RegisterEvent("PLAYER_GUILD_UPDATE", requestRosterSoon)
+LV:RegisterEvent("GROUP_ROSTER_UPDATE", function()
+    local inRaid = type(IsInRaid) == "function" and IsInRaid() or false
+    if inRaid and not LV.RosterSync.wasInRaid then requestRosterSoon() end
+    LV.RosterSync.wasInRaid = inRaid
+end)
 LV:RegisterEvent("GUILD_ROSTER_UPDATE", function()
     if LV.RosterSync.publisherCache then
         wipe(LV.RosterSync.publisherCache)
