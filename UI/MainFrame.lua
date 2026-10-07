@@ -389,6 +389,9 @@ function LV.UI:Ensure()
         if self.textEntryModal then
             self.textEntryModal:Hide()
         end
+        if self.rosterStringModal then
+            self.rosterStringModal:Hide()
+        end
         if self.lootDistributionModal then
             self.lootDistributionModal:Hide()
         end
@@ -1915,6 +1918,104 @@ function LV.UI:LiveTeamRosterCandidates(guildInfo, query, limit)
     return candidates
 end
 
+function LV.UI:ConfirmRosterImport(guildKey, value)
+    local allowed, reason = LV.RosterTransfer:CanManage(guildKey)
+    if not allowed then LV:Print(reason); return end
+    local data, errorText = LV.RosterTransfer:Decode(value)
+    if not data then LV:Print(errorText); return end
+    if data.guildKey ~= guildKey then LV:Print("This roster belongs to a different guild."); return end
+    local team
+    team, errorText = LV.RosterTransfer:MatchingTeam(guildKey, data.team)
+    if errorText then LV:Print(errorText); return end
+    self:ShowConfirmationDialog({
+        title = "Import Roster?",
+        message = (team and "Replace the roster for " or "Create a roster for ") .. data.team
+            .. " with " .. #data.rows .. " player(s)?\nTeam schedules and other teams are kept.",
+        acceptText = "Import",
+        onAccept = function()
+            local imported, result = LV.RosterTransfer:Import(guildKey, value)
+            if imported then
+                self.rosterTeamID, self.rosterSelectedNameID, self.rosterCandidateID = imported.id, nil, nil
+                LV:Print("Imported " .. result .. " players into " .. imported.name .. ".")
+                self:Refresh()
+            else LV:Print(result) end
+        end,
+    })
+end
+
+function LV.UI:ShowRosterStringDialog(guildKey, teamID, exporting)
+    local value, data
+    if exporting then
+        value, data = LV.RosterTransfer:Export(guildKey, teamID)
+        if not value then LV:Print(data); return end
+    end
+    local layer = self.rosterStringModal
+    if not layer then
+        layer = CreateFrame("Frame", nil, self.frame, "BackdropTemplate")
+        layer:SetAllPoints(self.frame)
+        layer:SetFrameStrata("FULLSCREEN_DIALOG")
+        layer:SetFrameLevel(self.frame:GetFrameLevel() + 400)
+        layer:SetToplevel(true)
+        layer:EnableMouse(true)
+        LV.Widgets:ApplyBackdrop(layer, LV.Widgets.colors.overlay, LV.Widgets.colors.transparent)
+        local dialog = CreateFrame("Frame", nil, layer, "BackdropTemplate")
+        dialog:SetSize(590, 310)
+        dialog:SetPoint("CENTER")
+        dialog:SetFrameLevel(layer:GetFrameLevel() + 1)
+        dialog:EnableMouse(true)
+        LV.Widgets:ApplyBackdrop(dialog, LV.Widgets.colors.canvasAlt, LV.Widgets.colors.borderStrong)
+        layer.dialog = dialog
+        dialog.title = LV.Widgets:Text(dialog, "", "large")
+        dialog.title:SetPoint("TOPLEFT", 20, -18)
+        dialog.hint = LV.Widgets:Text(dialog, "")
+        dialog.hint:SetPoint("TOPLEFT", 20, -50)
+        dialog.hint:SetWidth(550)
+        dialog.hint:SetTextColor(unpack(LV.Widgets.colors.muted))
+        local scroll = CreateFrame("ScrollFrame", nil, dialog, "UIPanelScrollFrameTemplate,BackdropTemplate")
+        scroll:SetPoint("TOPLEFT", 20, -92)
+        scroll:SetPoint("BOTTOMRIGHT", -42, 58)
+        LV.Widgets:ApplyBackdrop(scroll, LV.Widgets.colors.control, LV.Widgets.colors.border)
+        dialog.edit = CreateFrame("EditBox", nil, scroll)
+        dialog.edit:SetWidth(520)
+        dialog.edit:SetHeight(140)
+        dialog.edit:SetMultiLine(true)
+        dialog.edit:SetAutoFocus(false)
+        dialog.edit:SetFontObject(GameFontHighlightSmall)
+        dialog.edit:SetTextInsets(7, 7, 7, 7)
+        dialog.edit:SetMaxLetters(254096)
+        scroll:SetScrollChild(dialog.edit)
+        dialog.edit:SetScript("OnTextChanged", function() scroll:UpdateScrollChildRect() end)
+        dialog.edit:SetScript("OnCursorChanged", function(_, _, y, _, height)
+            local position, visible = scroll:GetVerticalScroll(), scroll:GetHeight()
+            y = -y
+            if y < position then scroll:SetVerticalScroll(math.max(0, y))
+            elseif y + height > position + visible then scroll:SetVerticalScroll(y + height - visible) end
+        end)
+        dialog.edit:SetScript("OnEscapePressed", function() layer:Hide() end)
+        dialog.cancel = LV.Widgets:Button(dialog, "Close", 88, 28, function() layer:Hide() end)
+        dialog.cancel:SetPoint("BOTTOMRIGHT", -20, 18)
+        dialog.accept = LV.Widgets:Button(dialog, "Import", 100, 28, function()
+            local text, key = dialog.edit:GetText(), layer.guildKey
+            layer:Hide()
+            self:ConfirmRosterImport(key, text)
+        end, "success")
+        dialog.accept:SetPoint("RIGHT", dialog.cancel, "LEFT", -10, 0)
+        self.rosterStringModal = layer
+    end
+    layer.guildKey = guildKey
+    local dialog = layer.dialog
+    dialog.title:SetText(exporting and ("Export Roster: " .. data.team) or "Import Roster")
+    dialog.hint:SetText(exporting and "Press Ctrl+C to copy this team's roster string."
+        or "Paste a LootViewer roster string. You will confirm the team and player count before importing.")
+    dialog.accept:SetShown(not exporting)
+    dialog.cancel.text:SetText(exporting and "Close" or "Cancel")
+    dialog.edit:SetText(value or "")
+    layer:Show()
+    layer:Raise()
+    dialog.edit:SetFocus()
+    dialog.edit:HighlightText()
+end
+
 function LV.UI:RenderTeamRoster()
     local guildInfo = self:CurrentGuildOrMessage()
     if not guildInfo then
@@ -1973,12 +2074,14 @@ function LV.UI:RenderTeamRoster()
 
     local inviteWindow = LV.Raid and LV.Raid.RaidInviteWindow
         and LV.Raid:RaidInviteWindow(team, cfg.alwaysShowRosterInvites)
-    local panelsTop = -150
-    local rosterPanelHeight = 242
+    local panelsTop = -254
+    local rosterPanelHeight = 218
+    local transferAllowed, transferReason = LV.RosterTransfer:CanManage(guildInfo.key)
+    local inviteWidth = 334
     if inviteWindow then
-        local invitePanel = LV.Widgets:Section(self.content, "Invite Team", 62)
+        local invitePanel = LV.Widgets:Section(self.content, "Invite Team", 90)
         invitePanel:SetPoint("TOPLEFT", 24, -150)
-        invitePanel:SetWidth(availableWidth)
+        invitePanel:SetWidth(inviteWidth)
 
         self.rosterInviteFilters = self.rosterInviteFilters or {}
         local selectedInviteFilter = self.rosterInviteFilters[team.id] or "raiders"
@@ -1987,21 +2090,15 @@ function LV.UI:RenderTeamRoster()
         local timingText = inviteWindow.always and "Always available"
             or minutesUntil > 0 and ("Starts in " .. tostring(minutesUntil) .. " min")
             or "Raid in progress"
-        local inviteHint = LV.Widgets:Text(invitePanel, timingText)
-        inviteHint:SetPoint("TOPLEFT", 12, -42)
-        inviteHint:SetWidth(112)
-        inviteHint:SetWordWrap(false)
-        inviteHint:SetTextColor(unpack(LV.Widgets.colors.navigation))
-
         local inviteFilter = LV.Widgets:Dropdown(invitePanel, rosterInviteFilterValues, function()
             return self.rosterInviteFilters[team.id] or "raiders"
         end, function(value)
             self.rosterInviteFilters[team.id] = value
             self:Refresh()
         end, 118)
-        inviteFilter:SetPoint("TOPLEFT", 136, -36)
+        inviteFilter:SetPoint("TOPLEFT", 12, -36)
         LV.Widgets:SetTooltip(inviteFilter,
-            "Raiders+ invites Raiders. Trials+ also includes Trials. Helpers+ also includes Helpers. All includes Socials.")
+            timingText .. ". Raiders+ invites Raiders. Trials+ also includes Trials. Helpers+ also includes Helpers. All includes Socials.")
 
         local inviteActive = LV.Raid:IsRosterInviteActive()
         local canInvite = LV.Raid:CanInviteRoster()
@@ -2027,14 +2124,47 @@ function LV.UI:RenderTeamRoster()
             statusText = LV.Raid.lastInviteStatus.text or statusText
         end
         local status = LV.Widgets:Text(invitePanel, statusText)
-        status:SetPoint("LEFT", invite, "RIGHT", 12, 0)
-        status:SetPoint("RIGHT", -12, 0)
+        status:SetPoint("TOPLEFT", 12, -72)
+        status:SetWidth(inviteWidth - 24)
         status:SetWordWrap(false)
         status:SetTextColor(unpack(LV.Widgets.colors.muted))
-
-        panelsTop = -226
-        rosterPanelHeight = 218
     end
+
+    local transferWidth = inviteWindow and availableWidth - inviteWidth - 16 or availableWidth
+    local transfer = LV.Widgets:Section(self.content, "Roster Transfer", 90)
+    transfer:SetPoint("TOPLEFT", 24 + (inviteWindow and inviteWidth + 16 or 0), -150)
+    transfer:SetWidth(transferWidth)
+    local importButton = LV.Widgets:Button(transfer, "Import", 64, 26, function()
+        self:ShowRosterStringDialog(guildInfo.key, team.id, false)
+    end)
+    importButton:SetPoint("TOPLEFT", 12, -36)
+    importButton:SetEnabled(transferAllowed)
+    LV.Widgets:SetTooltip(importButton, transferAllowed and "Import a roster string after confirming the team and player count." or transferReason)
+    local exportButton = LV.Widgets:Button(transfer, "Export", 64, 26, function()
+        self:ShowRosterStringDialog(guildInfo.key, team.id, true)
+    end)
+    exportButton:SetPoint("LEFT", importButton, "RIGHT", 6, 0)
+    exportButton:SetEnabled(transferAllowed)
+    LV.Widgets:SetTooltip(exportButton, transferAllowed and "Copy the selected team's complete roster as an export string." or transferReason)
+    local target = LV.Widgets:EditBox(transfer, math.max(120, transferWidth - 250), 26)
+    target:SetPoint("LEFT", exportButton, "RIGHT", 8, 0)
+    target:SetText(self.rosterTransferTarget or "")
+    target:SetEnabled(transferAllowed)
+    target:SetScript("OnTextChanged", function(edit) self.rosterTransferTarget = edit:GetText() end)
+    LV.Widgets:SetTooltip(target, "Character name, Name-Realm, group, or raid. Guild members with LootViewer confirm before accepting your authorized roster transfer.")
+    local sendButton = LV.Widgets:Button(transfer, "Send To", 70, 26, function()
+        local _, message = LV.RosterTransfer:Send(guildInfo.key, team.id, target:GetText())
+        LV:Print(message)
+    end, "primary")
+    sendButton:SetPoint("LEFT", target, "RIGHT", 8, 0)
+    sendButton:SetEnabled(transferAllowed)
+    LV.Widgets:SetTooltip(sendButton, transferAllowed and "Offer this team's roster. Each recipient confirms before importing it." or transferReason)
+    target:SetScript("OnEnterPressed", function(edit) edit:ClearFocus(); if transferAllowed then sendButton:Click() end end)
+    local transferHint = LV.Widgets:Text(transfer, "Send to: name, Name-Realm, group, or raid")
+    transferHint:SetPoint("TOPLEFT", 12, -72)
+    transferHint:SetWidth(transferWidth - 24)
+    transferHint:SetWordWrap(false)
+    transferHint:SetTextColor(unpack(LV.Widgets.colors.muted))
 
     local gap = 16
     local panelWidth = math.floor((availableWidth - gap) / 2)

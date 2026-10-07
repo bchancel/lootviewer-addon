@@ -49,6 +49,7 @@ $expectedTocEntries = @(
     "Core/Guild.lua"
     "Core/Comms.lua"
     "Core/RosterSync.lua"
+    "Core/RosterTransfer.lua"
     "Core/DataSync.lua"
     "Events/Raid.lua"
     "Events/Loot.lua"

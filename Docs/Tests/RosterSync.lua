@@ -329,6 +329,19 @@ advance(6)
 eq(countSent("OfflineMember-Realm", "LRQ"), requests, "Group changes do not repeatedly request snapshots")
 print("PASS: login and raid-join catch-up work without requests on every group change")
 
+-- Blizzard can repeat guild roster updates all day, even if nobody publishes
+-- a team snapshot. One login catch-up must not become a periodic broadcast.
+local idle = newClient("IdleMember-Realm", 8)
+idle.online = false
+enableNetwork(idle, "IdleMember-Realm")
+fire(idle, "PLAYER_ENTERING_WORLD")
+advance(6)
+eq(countSent("IdleMember-Realm", "LRQ"), 1, "Idle login sends one catch-up request")
+for _ = 1, 40 do fire(idle, "GUILD_ROSTER_UPDATE") end
+advance(6)
+eq(countSent("IdleMember-Realm", "LRQ"), 1, "Repeated guild updates do not restart idle sync")
+print("PASS: idle guild updates do not cause repeated roster broadcasts")
+
 local oldAuto = metadata(publisher)
 override(publisher, "Billcosbyed", "alt", "Trashhealur")
 advance(3)
@@ -344,6 +357,12 @@ advance(4, function(packet)
     return true
 end)
 assert(#captured > 2, "Test must split the long label")
+local authorityChecks = 0
+local originalCanAccept = recipient.RosterSync.CanAccept
+function recipient.RosterSync:CanAccept(...)
+    authorityChecks = authorityChecks + 1
+    return originalCanAccept(self, ...)
+end
 for index = #captured, 2, -1 do
     local packet = captured[index]
     recipient.RosterSync:HandleMessage(packet.parts, packet.sender, packet.channel)
@@ -352,6 +371,8 @@ end
 eq(rr.gr[id(recipient, "LongLabel")], nil, "Partial metadata never applies")
 local first = captured[1]
 recipient.RosterSync:HandleMessage(first.parts, first.sender, first.channel)
+eq(authorityChecks, 1, "A multi-chunk update checks packet authority once")
+recipient.RosterSync.CanAccept = originalCanAccept
 eq(rr.gr[id(recipient, "LongLabel")].rn, longRank, "Out-of-order duplicate chunks retain UTF-8 and delimiters")
 recipient.RosterSync:HandleMessage(first.parts, first.sender, first.channel)
 eq(countSent("LiveMember-Realm", "LRM"), 0, "Duplicate complete packets do not echo")

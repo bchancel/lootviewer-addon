@@ -185,7 +185,7 @@ function LV.RosterSync:BumpTeamRevision(team)
     return team.rt
 end
 
-function LV.RosterSync:RequestLatest(force, metadataAttempt)
+function LV.RosterSync:RequestLatest(force, metadataAttempt, snapshotRetry)
     local actual = LV.Guild:ActualInfo()
     if not actual or type(IsInGuild) ~= "function" or not IsInGuild() then
         return false
@@ -194,6 +194,7 @@ function LV.RosterSync:RequestLatest(force, metadataAttempt)
     if not force and now - (tonumber(self.lastRequestAt) or 0) < 15 then
         return false
     end
+    if not snapshotRetry then self.snapshotRetryAttempts = 0 end
     self.lastRequestAt = now
     self.requestSerial = (tonumber(self.requestSerial) or 0) + 1
     local nonce = tostring(LV.Util:ServerNow()) .. "-" .. tostring(self.requestSerial)
@@ -277,6 +278,8 @@ function LV.RosterSync:ReceiveMetadata(parts, sender, channel)
     if self.metadataCompleted[key] then return end
     local stage = self.metadataIncoming[key]
     if not stage then
+        local hint = tostring(parts[7] or ""):match("^pm:(.+)$")
+        if not self:CanAccept(sender, guildKey, tonumber(hint)) then return end
         stage = { total = total, chunks = {}, received = 0 }
         self.metadataIncoming[key] = stage
         if C_Timer and C_Timer.After then
@@ -330,13 +333,14 @@ function LV.RosterSync:QueueWhisper(kind, target, payload, delay)
 end
 
 function LV.RosterSync:ScheduleRetry()
-    if self.retryScheduled then
+    if self.retryScheduled or (self.snapshotRetryAttempts or 0) >= 2 then
         return
     end
+    self.snapshotRetryAttempts = (self.snapshotRetryAttempts or 0) + 1
     self.retryScheduled = true
     local retry = function()
         self.retryScheduled = false
-        self:RequestLatest(true)
+        self:RequestLatest(true, nil, true)
     end
     if C_Timer and C_Timer.After then
         C_Timer.After(5, retry)
@@ -475,10 +479,15 @@ function LV.RosterSync:FinishSnapshotElection(electionKey)
         return false
     end
 
+    -- Packet authority is checked when the transfer begins. Check again at
+    -- commit so a rank change during a long transfer cannot import it.
+    local allowed = LV.Guild:CanAcceptRosterPublisher(stage.guildKey, stage.sender, stage.memberID)
+
     for _, candidate in pairs(election.candidates) do
         self.inbound[candidate.stageKey] = nil
     end
     self.snapshotElections[electionKey] = nil
+    if not allowed then return false end
     return self:ApplySnapshot(stage.sender, stage)
 end
 
@@ -585,14 +594,11 @@ function LV.RosterSync:HandleMessage(parts, sender, channel)
         return
     end
 
-    local hint = tostring(parts[#parts] or ""):match("^pm:(.+)$")
-    if not self:CanAccept(sender, guildKey, tonumber(hint)) then
-        return
-    end
-
     if kind == "LRM" then
         self:ReceiveMetadata(parts, sender, channel)
     elseif kind == "LRS" then
+        local hint = tostring(parts[#parts] or ""):match("^pm:(.+)$")
+        if not self:CanAccept(sender, guildKey, tonumber(hint)) then return end
         local nonce, teamID = parts[3], parts[4]
         local revision, expected = tonumber(parts[5]), tonumber(parts[6])
         local record = LV.Store:GuildRecord(guildKey)
@@ -607,6 +613,7 @@ function LV.RosterSync:HandleMessage(parts, sender, channel)
                 expected = expected,
                 rows = {},
                 sender = normalizedSender(sender),
+                memberID = tonumber(hint),
             }
             local stage = self.inbound[key]
             local accepted
@@ -654,6 +661,8 @@ function LV.RosterSync:HandleMessage(parts, sender, channel)
             end
         end
     elseif kind == "LRU" then
+        local hint = tostring(parts[#parts] or ""):match("^pm:(.+)$")
+        if not self:CanAccept(sender, guildKey, tonumber(hint)) then return end
         local teamID, revision = parts[3], tonumber(parts[4])
         local fullName, removed = LV.Util:Trim(parts[5]), tonumber(parts[6]) == 1
         local record = LV.Store:GuildRecord(guildKey)
@@ -681,17 +690,23 @@ function LV.RosterSync:HandleMessage(parts, sender, channel)
 end
 
 local function requestRosterSoon()
-    if LV.RosterSync.requestScheduled then
+    local actual = LV.Guild:ActualInfo()
+    if not actual or LV.RosterSync.autoRequestGuildKey == actual.key or LV.RosterSync.requestScheduled then
         return
     end
     LV.RosterSync.requestScheduled = true
     if C_Timer and C_Timer.After then
         C_Timer.After(5, function()
             LV.RosterSync.requestScheduled = false
-            LV.RosterSync:RequestLatest(false)
+            local current = LV.Guild:ActualInfo()
+            if current and LV.RosterSync.autoRequestGuildKey ~= current.key then
+                LV.RosterSync.autoRequestGuildKey = current.key
+                LV.RosterSync:RequestLatest(false)
+            end
         end)
     else
         LV.RosterSync.requestScheduled = false
+        LV.RosterSync.autoRequestGuildKey = actual.key
         LV.RosterSync:RequestLatest(false)
     end
 end
@@ -700,14 +715,18 @@ LV:RegisterEvent("PLAYER_ENTERING_WORLD", requestRosterSoon)
 LV:RegisterEvent("PLAYER_GUILD_UPDATE", requestRosterSoon)
 LV:RegisterEvent("GROUP_ROSTER_UPDATE", function()
     local inRaid = type(IsInRaid) == "function" and IsInRaid() or false
-    if inRaid and not LV.RosterSync.wasInRaid then requestRosterSoon() end
+    if inRaid and not LV.RosterSync.wasInRaid then
+        if C_Timer and C_Timer.After then
+            C_Timer.After(5, function() LV.RosterSync:RequestLatest(false) end)
+        else
+            LV.RosterSync:RequestLatest(false)
+        end
+    end
     LV.RosterSync.wasInRaid = inRaid
 end)
 LV:RegisterEvent("GUILD_ROSTER_UPDATE", function()
     if LV.RosterSync.publisherCache then
         wipe(LV.RosterSync.publisherCache)
     end
-    if not LV.RosterSync.lastRosterReceivedAt then
-        requestRosterSoon()
-    end
+    requestRosterSoon()
 end)

@@ -1,5 +1,16 @@
 # Changelog
 
+## 12.1.13 - 2026-10-07
+
+1. Guild roster updates no longer keep restarting automatic sync while you are idle.
+2. Logging in still checks for the latest guild roster and main and alt links.
+3. Joining a raid still checks for roster changes after the login check.
+4. Large roster transfers use less CPU while their messages arrive.
+5. Incomplete team transfers stop retrying after two attempts, and guild rank is checked again before applying a transfer.
+6. Add roster direct import and export
+7. Send a roster to a character, party, or raid. Confirmation appears above the addon window even before the sender's guild rank has loaded, and the sender sees receipt or rejection messages.
+8. Roster strings can be decoded for an external site with the included Python function.
+
 ## 12.1.12 - 2026-09-28
 
 1. Guild sync now shares roster assignments, main and alt links, and known guild ranks when an authorized player accepts a sync invite.

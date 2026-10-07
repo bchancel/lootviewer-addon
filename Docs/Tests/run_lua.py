@@ -21,3 +21,4 @@ for path in sources:
     compile_lua(str(path))
 print(f"Lua 5.1 syntax passed for {len(sources)} runtime files.", flush=True)
 lua.execute((ROOT / "Docs" / "Tests" / "RosterSync.lua").read_text(encoding="utf-8"))
+lua.execute((ROOT / "Docs" / "Tests" / "RosterTransfer.lua").read_text(encoding="utf-8"))
