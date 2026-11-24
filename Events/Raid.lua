@@ -1597,6 +1597,14 @@ function LV.Raid:ObserveRemoteSession(parts, sender)
 end
 
 function LV.Raid:HandleWhisper(message, sender)
+    -- Restricted encounters can hide both the whisper text and sender name.
+    if type(issecretvalue) == "function" and (issecretvalue(message) or issecretvalue(sender)) then
+        return
+    end
+    if type(message) ~= "string" or type(sender) ~= "string" or sender == "" then
+        return
+    end
+
     local cfg = LV.Guild:CurrentConfig()
     local session = self:GetActiveSession()
     if not cfg or not session then

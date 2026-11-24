@@ -1,13 +1,13 @@
 local _, LV = ...
 
 local distributionColors = {
-    lfr = { 0.46, 0.48, 0.52, 0.95 },
-    normal = { 0.20, 0.72, 0.34, 0.95 },
-    heroic = { 0.14, 0.48, 0.95, 0.95 },
-    mythic = { 0.65, 0.28, 0.92, 0.95 },
-    champion = { 0.20, 0.72, 0.34, 0.95 },
-    hero = { 0.14, 0.48, 0.95, 0.95 },
-    myth = { 0.65, 0.28, 0.92, 0.95 },
+    lfr = { 0.46, 0.48, 0.52, 1 },
+    normal = { 0.243, 0.620, 0.431, 1 },
+    heroic = { 0.247, 0.498, 0.816, 1 },
+    mythic = { 0.604, 0.353, 0.839, 1 },
+    champion = { 0.243, 0.620, 0.431, 1 },
+    hero = { 0.247, 0.498, 0.816, 1 },
+    myth = { 0.604, 0.353, 0.839, 1 },
 }
 
 local distributionLabels = {
@@ -116,7 +116,7 @@ function LV.UI:RaidLootDistributionRows(guildKey)
         if bucket and row.src ~= "bonus" and not excluded and not warbound
             and LV.Seasons:EventMatchesFilter(guildKey, record, row, self:SelectedSeasonFilter())
             and self:EventMatchesRaidTag(record, row, self.historyTeamID, true)
-            and self:EventMeetsMinimumDifficulty(guildKey, record, row) then
+            and self:EventMatchesDifficultyFilter(guildKey, record, row) then
             local owner = self:RaidFinalLootOwner(record, row)
             local mainID = self:AttendanceRollupID(guildKey, owner)
             if mainID then
@@ -327,7 +327,7 @@ function LV.UI:ShowLootDistributionDetail(title, entries, guildKey, isDungeon)
         background:SetPoint("TOPLEFT", 4, y + 4)
         background:SetPoint("TOPRIGHT", -2, y + 4)
         background:SetHeight(28)
-        background:SetColorTexture(unpack(index % 2 == 0 and LV.Widgets.colors.canvasAlt or LV.Widgets.colors.surface))
+        background:SetColorTexture(unpack(LV.Widgets:RowColor(index)))
         local dateText = LV.Widgets:Text(content, date("%m/%d/%y", tonumber(row.ts) or 0))
         dateText:SetPoint("TOPLEFT", 12, y)
         dateText:SetWidth(72)
@@ -358,82 +358,130 @@ function LV.UI:ShowLootDistributionDetail(title, entries, guildKey, isDungeon)
     layer:Raise()
 end
 
+local function lighten(color, amount)
+    amount = amount or 0.35
+    return {
+        color[1] + ((1 - color[1]) * amount),
+        color[2] + ((1 - color[2]) * amount),
+        color[3] + ((1 - color[3]) * amount),
+        1,
+    }
+end
+
+local function colorCode(color)
+    return string.format("|cff%02x%02x%02x",
+        math.floor((color[1] or 1) * 255 + 0.5),
+        math.floor((color[2] or 1) * 255 + 0.5),
+        math.floor((color[3] or 1) * 255 + 0.5))
+end
+
 function LV.UI:RenderDistributionMeter(parent, rows, total, buckets, guildKey, isDungeon)
     local count = LV.Widgets:Text(parent.header, tostring(total) .. " item(s)")
     count:SetPoint("RIGHT", -18, 0)
     count:SetTextColor(unpack(LV.Widgets.colors.muted))
-    local legendX = 24
-    for _, bucket in ipairs(buckets) do
-        local swatch = parent:CreateTexture(nil, "ARTWORK")
-        swatch:SetColorTexture(unpack(distributionColors[bucket]))
-        swatch:SetSize(10, 10)
-        swatch:SetPoint("TOPLEFT", legendX, -44)
-        local label = LV.Widgets:Text(parent, distributionLabels[bucket])
-        label:SetPoint("LEFT", swatch, "RIGHT", 6, 0)
-        label:SetTextColor(unpack(LV.Widgets.colors.textSecondary))
-        legendX = legendX + (isDungeon and 170 or 105)
+    if self.SetHeaderStats then
+        local average = #rows > 0 and (total / #rows) or 0
+        self:SetHeaderStats({
+            { tostring(total), "Items" },
+            { tostring(#rows), "Owners" },
+            { string.format("%.1f", average), "Per owner", true },
+        })
     end
     if #rows == 0 then
         local empty = LV.Widgets:Text(parent, "No qualifying loot has been recorded for this selection.")
-        empty:SetPoint("TOPLEFT", 24, -84)
+        empty:SetPoint("TOPLEFT", 24, -50)
         empty:SetTextColor(unpack(LV.Widgets.colors.muted))
         return
     end
+
+    local width = math.max(560, (tonumber(parent:GetWidth()) or 760) - 36)
+    local nameWidth = 130
+    local totalWidth = 40
+    local breakdownWidth = math.max(76, #buckets * 30)
+    local barX = 12 + nameWidth
+    local barWidth = math.max(200, width - barX - breakdownWidth - totalWidth - 30)
+    local breakdownX = barX + barWidth + 14
+    local totalX = breakdownX + breakdownWidth + 6
+    local abbreviations = {}
+    for _, bucket in ipairs(buckets) do
+        abbreviations[#abbreviations + 1] = string.upper(string.sub(distributionLabels[bucket] or bucket, 1, 1))
+    end
+    self:ColumnHeader(parent, "Final owner", 24, -42, nameWidth)
+    self:ColumnHeader(parent, "Items, scaled to the top earner", barX + 12, -42, barWidth)
+    self:ColumnHeader(parent, table.concat(abbreviations, " · "), breakdownX + 12, -42, breakdownWidth, "RIGHT")
+    self:ColumnHeader(parent, "Total", totalX + 12, -42, totalWidth, "RIGHT")
+
     local scroll, content = LV.Widgets:ScrollFrame(parent)
-    scroll:SetPoint("TOPLEFT", 12, -70)
-    scroll:SetPoint("BOTTOMRIGHT", -12, 10)
-    local width = math.max(420, (tonumber(parent:GetWidth()) or 760) - 190)
+    scroll:SetPoint("TOPLEFT", 12, -60)
+    scroll:SetPoint("BOTTOMRIGHT", -8, 10)
     local maxTotal = 1
     for _, group in ipairs(rows) do
         maxTotal = math.max(maxTotal, tonumber(group.total) or 0)
     end
-    local y = -4
+    local y = 0
     for index, group in ipairs(rows) do
+        local background = content:CreateTexture(nil, "BACKGROUND")
+        background:SetPoint("TOPLEFT", 0, y)
+        background:SetPoint("TOPRIGHT", 0, y)
+        background:SetHeight(28)
+        background:SetColorTexture(unpack(LV.Widgets:RowColor(index)))
+
         local name = LV.Widgets:Text(content, group.name ~= "" and group.name or "Unknown")
-        name:SetPoint("TOPLEFT", 12, y - 1)
-        name:SetWidth(120)
+        name:SetPoint("TOPLEFT", 12, y - 7)
+        name:SetWidth(nameWidth - 8)
         name:SetWordWrap(false)
         if not isDungeon then
             self:SetNameClassColor(name, guildKey, group.id)
         end
-        local bar = CreateFrame("Frame", nil, content, "BackdropTemplate")
-        bar:SetPoint("TOPLEFT", 138, y)
-        bar:SetSize(width, 22)
-        LV.Widgets:ApplyBackdrop(bar, LV.Widgets.colors.control, LV.Widgets.colors.border)
-        local x = 1
+
+        local bar = CreateFrame("Frame", nil, content)
+        bar:SetPoint("TOPLEFT", barX, y - 8)
+        bar:SetSize(barWidth, 12)
+        local x = 0
+        local breakdown = {}
         for _, bucket in ipairs(buckets) do
             local entries = group.buckets[bucket] or {}
-            local segmentWidth = math.floor((width - 2) * #entries / maxTotal)
+            local bucketColor = distributionColors[bucket]
+            breakdown[#breakdown + 1] = (#entries > 0 and colorCode(lighten(bucketColor)) or "|cff4b555c")
+                .. tostring(#entries) .. "|r"
             if #entries > 0 then
-                segmentWidth = math.max(1, segmentWidth)
+                local segmentWidth = math.max(1, math.floor(barWidth * #entries / maxTotal))
                 local segment = CreateFrame("Button", nil, bar)
-                segment:SetPoint("TOPLEFT", x, -1)
-                segment:SetSize(math.max(1, segmentWidth), 20)
+                segment:SetPoint("TOPLEFT", x, 0)
+                segment:SetSize(segmentWidth, 12)
                 local fill = segment:CreateTexture(nil, "ARTWORK")
                 fill:SetAllPoints()
-                fill:SetColorTexture(unpack(distributionColors[bucket]))
-                local value = LV.Widgets:Text(segment, tostring(#entries))
-                value:SetPoint("CENTER")
+                fill:SetColorTexture(unpack(bucketColor))
+                local bucketLabel = distributionLabels[bucket]
                 segment:SetScript("OnClick", function()
-                    self:ShowLootDistributionDetail(group.name .. " - " .. distributionLabels[bucket], entries, guildKey, isDungeon)
+                    self:ShowLootDistributionDetail(group.name .. " - " .. bucketLabel, entries, guildKey, isDungeon)
                 end)
                 segment:SetScript("OnEnter", function()
-                    fill:SetVertexColor(1.18, 1.18, 1.18, 1)
+                    fill:SetColorTexture(unpack(lighten(bucketColor, 0.2)))
                     GameTooltip:SetOwner(segment, "ANCHOR_RIGHT")
-                    GameTooltip:SetText(distributionLabels[bucket])
-                    GameTooltip:AddLine("Click to see " .. tostring(#entries) .. " item(s).", 1, 1, 1)
+                    GameTooltip:SetText(bucketLabel .. ": " .. tostring(#entries))
+                    GameTooltip:AddLine("Click to see these items.", 1, 1, 1)
                     GameTooltip:Show()
                 end)
                 segment:SetScript("OnLeave", function()
-                    fill:SetVertexColor(1, 1, 1, 1)
+                    fill:SetColorTexture(unpack(bucketColor))
                     GameTooltip:Hide()
                 end)
                 x = x + segmentWidth
             end
         end
+
+        local breakdownText = LV.Widgets:Text(content, table.concat(breakdown, " |cff4b555c·|r "))
+        breakdownText:SetPoint("TOPLEFT", breakdownX, y - 7)
+        breakdownText:SetWidth(breakdownWidth)
+        breakdownText:SetJustifyH("RIGHT")
+        breakdownText:SetWordWrap(false)
+
         local totalText = LV.Widgets:Text(content, tostring(group.total))
-        totalText:SetPoint("LEFT", bar, "RIGHT", 10, 0)
-        y = y - 32
+        totalText:SetPoint("TOPLEFT", totalX, y - 7)
+        totalText:SetWidth(totalWidth)
+        totalText:SetJustifyH("RIGHT")
+        y = y - 28
     end
     content:SetHeight(math.max(1, -y + 4))
 end
@@ -477,7 +525,7 @@ function LV.UI:RenderDungeonRecent(parent)
         background:SetPoint("TOPLEFT", 4, y + 4)
         background:SetPoint("TOPRIGHT", -2, y + 4)
         background:SetHeight(26)
-        background:SetColorTexture(unpack(index % 2 == 0 and LV.Widgets.colors.canvasAlt or LV.Widgets.colors.surface))
+        background:SetColorTexture(unpack(LV.Widgets:RowColor(index)))
         local run = runs[row.run] or {}
         local ownerName = LV.Store:DungeonDictionaryValue("n", row.o or row.p)
         local dateText = LV.Widgets:Text(content, date("%m/%d %H:%M", tonumber(row.ts) or 0))
@@ -597,7 +645,7 @@ function LV.UI:RenderDungeonDistributionFilters(dungeonValues)
     local difficultyCell = CreateFrame("Frame", nil, section, "BackdropTemplate")
     difficultyCell:SetPoint("TOPLEFT", 4, -34)
     difficultyCell:SetSize(half, 52)
-    LV.Widgets:ApplyBackdrop(difficultyCell, LV.Widgets.colors.canvasAlt, LV.Widgets.colors.transparent)
+    LV.Widgets:ApplyBackdrop(difficultyCell, LV.Widgets.colors.rowOdd, LV.Widgets.colors.transparent)
     local difficultyLabel = LV.Widgets:Text(difficultyCell, "Minimum Difficulty")
     difficultyLabel:SetPoint("LEFT", 14, 3)
     local difficulty = self:CreateDungeonTrackSlider(difficultyCell, math.max(220, half - 168))
@@ -606,7 +654,7 @@ function LV.UI:RenderDungeonDistributionFilters(dungeonValues)
     local dungeonCell = CreateFrame("Frame", nil, section, "BackdropTemplate")
     dungeonCell:SetPoint("TOPLEFT", half + 6, -34)
     dungeonCell:SetSize(half, 52)
-    LV.Widgets:ApplyBackdrop(dungeonCell, LV.Widgets.colors.canvasAlt, LV.Widgets.colors.transparent)
+    LV.Widgets:ApplyBackdrop(dungeonCell, LV.Widgets.colors.rowOdd, LV.Widgets.colors.transparent)
     local dungeonLabel = LV.Widgets:Text(dungeonCell, "Dungeon")
     dungeonLabel:SetPoint("LEFT", 14, 0)
     local dungeon = LV.Widgets:Dropdown(dungeonCell, dungeonValues, function()

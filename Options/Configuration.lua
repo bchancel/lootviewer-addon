@@ -1027,7 +1027,7 @@ function UI:RenderPlayerOptions(guildInfo)
         self:Refresh()
     end)
     showPugs:SetChecked(self.configShowPugs)
-    showPugs:SetPoint("TOPLEFT", 8, -40)
+    showPugs:SetPoint("TOPLEFT", 10, -44)
     LV.Widgets:SetTooltip(showPugs, "Include players who are not tagged as guild mains or alts.")
 
     local searchLabel = LV.Widgets:Label(section, "Player search")
@@ -1070,24 +1070,40 @@ function UI:RenderPlayerOptions(guildInfo)
     countText:SetPoint("TOPLEFT", 8, -78)
     countText:SetTextColor(unpack(LV.Widgets.colors.muted))
 
+    local typeHeader = section:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    typeHeader:SetText("TYPE")
+    typeHeader:SetTextColor(unpack(LV.Widgets.colors.textMuted))
+    local playerHeader = section:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    playerHeader:SetText("PLAYER")
+    playerHeader:SetTextColor(unpack(LV.Widgets.colors.textMuted))
+    playerHeader:SetPoint("TOPLEFT", 22, -104)
+
     local scroll, content = LV.Widgets:ScrollFrame(section)
-    scroll:SetPoint("TOPLEFT", 8, -102)
+    scroll:SetPoint("TOPLEFT", 8, -122)
     scroll:SetPoint("BOTTOMRIGHT", -8, 10)
     local width = math.max(650, (tonumber(section:GetWidth()) or 760) - 46)
-    local y = -2
+    local typeX = math.floor(width * 0.52)
+    typeHeader:SetPoint("TOPLEFT", 10 + typeX, -104)
+    local rowHeight = 30
+    local y = 0
     for index, player in ipairs(matches) do
         local playerID = player.id
         local fullName = player.fullName
-        local row = CreateFrame("Frame", nil, content, "BackdropTemplate")
+        local rowColor = LV.Widgets:RowColor(index)
+        local row = CreateFrame("Button", nil, content, "BackdropTemplate")
         row:SetPoint("TOPLEFT", 2, y)
-        row:SetSize(width, 48)
-        LV.Widgets:ApplyBackdrop(row,
-            index % 2 == 0 and LV.Widgets.colors.canvasAlt or LV.Widgets.colors.surface,
-            LV.Widgets.colors.border)
+        row:SetSize(width, rowHeight)
+        LV.Widgets:ApplyBackdrop(row, rowColor, LV.Widgets.colors.transparent)
+        row:SetScript("OnEnter", function()
+            row:SetBackdropColor(unpack(LV.Widgets.colors.surfaceHover))
+        end)
+        row:SetScript("OnLeave", function()
+            row:SetBackdropColor(unpack(rowColor))
+        end)
 
         local name = LV.Widgets:Text(row, fullName)
-        name:SetPoint("TOPLEFT", 12, -8)
-        name:SetWidth(width - 230)
+        name:SetPoint("LEFT", 12, 0)
+        name:SetWidth(typeX - 20)
         name:SetWordWrap(false)
         self:SetNameClassColor(name, guildKey, playerID)
 
@@ -1101,12 +1117,16 @@ function UI:RenderPlayerOptions(guildInfo)
             end
         end
         local detail = LV.Widgets:Text(row, tagLabel)
-        detail:SetPoint("TOPLEFT", 12, -28)
-        detail:SetWidth(width - 230)
+        detail:SetPoint("LEFT", typeX, 0)
+        detail:SetPoint("RIGHT", -40, 0)
         detail:SetWordWrap(false)
-        detail:SetTextColor(unpack(LV.Widgets.colors.muted))
+        detail:SetTextColor(unpack(player.tag == "guild" and LV.Widgets.colors.textSecondary
+            or LV.Widgets.colors.textMuted))
 
-        local delete = LV.Widgets:Button(row, "Delete", 74, 28, function()
+        local function editPlayer()
+            self:ShowPlayerDetailForName(guildKey, playerID)
+        end
+        local function deletePlayer()
             self:ShowConfirmationDialog({
                 title = "Delete Player?",
                 message = "Delete " .. fullName .. " and remove their attendance, loot, trades, roster assignments, and alt links? This cannot be undone.",
@@ -1122,14 +1142,29 @@ function UI:RenderPlayerOptions(guildInfo)
                     self:Refresh()
                 end,
             })
-        end, "danger")
-        delete:SetPoint("RIGHT", -10, 0)
-
-        local edit = LV.Widgets:Button(row, "Edit", 68, 28, function()
-            self:ShowPlayerDetailForName(guildKey, playerID)
-        end, "primary")
-        edit:SetPoint("RIGHT", delete, "LEFT", -8, 0)
-        y = y - 54
+        end
+        local more
+        row:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+        row:SetScript("OnClick", function(_, mouseButton)
+            if mouseButton == "RightButton" then
+                if more then
+                    more:OpenMenu()
+                end
+            else
+                editPlayer()
+            end
+        end)
+        more = LV.Widgets:RowMenuButton(row, function()
+            return {
+                { title = true, text = fullName },
+                { text = "Edit player", onClick = editPlayer },
+                { separator = true },
+                { text = "Delete player", danger = true, onClick = deletePlayer },
+            }
+        end)
+        more:SetPoint("RIGHT", -8, 0)
+        LV.Widgets:SetTooltip(more, "Player actions")
+        y = y - rowHeight
     end
     content:SetHeight(math.max(1, -y + 4))
 end

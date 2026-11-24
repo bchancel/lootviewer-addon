@@ -4,6 +4,9 @@ LV.Util = {}
 LV.Util.itemWarboundCache = {}
 
 function LV.Util:Trim(value)
+    if type(issecretvalue) == "function" and issecretvalue(value) then
+        return ""
+    end
     value = tostring(value or "")
     value = value:gsub("^%s+", "")
     value = value:gsub("%s+$", "")

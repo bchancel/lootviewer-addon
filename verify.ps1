@@ -464,17 +464,17 @@ if ($uiText -notmatch 'RAID_HISTORY_GUILD_FILTER\s*=\s*"__guild_raids__"' -or
     $uiText -notmatch 'local defaultRaidFilter = hasGuildRaids and RAID_HISTORY_GUILD_FILTER or LV\.Constants\.PUG_TEAM_ID') {
     throw "Raid History no longer defaults to guild raids or isolates Pugs in its raid selector."
 }
-if ($uiText -notmatch 'CreateHistoryDifficultySlider' -or
-    $uiText -notmatch 'Minimum Difficulty' -or
-    $uiText -notmatch 'EventMeetsMinimumDifficulty' -or
-    $uiText -notmatch 'Loot Filters' -or
+if ($uiText -notmatch 'function LV\.UI:RenderLootHistoryFilters' -or
+    $uiText -notmatch 'function LV\.UI:ToggleRaidDifficulty' -or
+    $uiText -notmatch 'EventMatchesDifficultyFilter' -or
+    $uiText -notmatch 'raidMinDifficulty' -or
     $historyMeterText -notmatch 'lfr\s*=\s*\{\s*0\.46' -or
     $historyMeterText -notmatch 'difficulty\s*==\s*"L"' -or
     $historyMeterText -notmatch 'RaidDifficultyBuckets' -or
     $historyMeterText -notmatch 'EventMatchesRaidTag\(record, row, self\.historyTeamID, true\)' -or
     $uiText -notmatch 'excludePugsFromAll' -or
     $uiText -notmatch 'not LV\.Store:IsGlobalPugTeam\(raidTeamID\)') {
-    throw "The Loot History filter panel, minimum-difficulty threshold, or gray LFR distribution segment appears incomplete."
+    throw "The Loot History filter toolbar, difficulty chips, or gray LFR distribution segment appears incomplete."
 }
 if ($uiText -notmatch '\[250\]\s*=\s*"Raid Finder"' -or
     $uiText -notmatch 'difficultyID\s*==\s*250' -or
@@ -501,11 +501,11 @@ if ($seasonText -notmatch 'label\s*=\s*"Current Season"' -or
     $uiText -notmatch 'function LV\.UI:ResetSeasonOnOpen' -or
     $uiText -notmatch 'self:ResetSeasonOnOpen\(\)' -or
     $uiText -notmatch 'dungeonHistory\s*=\s*\{' -or
-    $uiText -notmatch 'raidNavHeader:SetText\("Raids"\)' -or
-    $uiText -notmatch 'dungeonNavHeader:SetText\("Dungeons"\)' -or
-    $uiText -notmatch 'dungeonNavHeader:SetShown\(dungeonEnabled\)' -or
-    $uiText -notmatch 'sync:SetPoint\("BOTTOMLEFT", 18, 54\)') {
-    throw "The Current Season/All selector, grouped sidebar, conditional dungeon menu, or fixed Sync action appears incomplete."
+    $uiText -notmatch 'navHeading\("Raids"\)' -or
+    $uiText -notmatch 'navHeading\("Dungeons"\)' -or
+    $uiText -notmatch 'placeHeader\(self\.dungeonNavHeader, dungeonEnabled\)' -or
+    $uiText -notmatch 'placeButton\("sync"\)') {
+    throw "The Current Season/All selector, grouped sidebar, conditional dungeon menu, or Addon section with Sync appears incomplete."
 }
 if ($dungeonText -notmatch 'CHALLENGE_MODE_COMPLETED' -or
     $dungeonText -notmatch 'BONUS_ROLL_RESULT' -or
@@ -607,11 +607,11 @@ if ($dataSyncText -notmatch 'function LV\.DataSync:RaidIdentity' -or
     $uiText -notmatch 'return not LV\.Store:IsGlobalPugTeam\(raidTeamID\)' -or
     $uiText -notmatch 'lootByRaid' -or
     $uiText -notmatch '\{\s*"MIA",\s*426' -or
-    $uiText -notmatch 'optionsHeader:SetPoint\("TOPRIGHT"' -or
-    $uiText -notmatch 'raidType:SetPoint\("RIGHT",\s*-78' -or
+    $uiText -notmatch 'LV\.Widgets:RowMenuButton\(rowButton' -or
+    $uiText -notmatch 'raidType:SetPoint\("RIGHT",\s*-36' -or
     $historyMeterText -notmatch 'dungeonOnlyBonusRolls' -or
     $historyMeterText -notmatch 'Only Bonus Rolls' -or
-    $widgetsText -notmatch 'checked and colors\.success or colors\.danger') {
+    $widgetsText -notmatch 'colors\.switchTrackOff') {
     throw "Normalized record-level raid sync or the requested raid/dungeon history controls appear incomplete."
 }
 if ($optionsText -notmatch 'Delete Raid Team\?' -or

@@ -344,7 +344,7 @@ function LV.Store:Initialize()
     dungeon.next.trade = tonumber(dungeon.next.trade) or 1
 
     self.db = LootViewerDB
-    self.runtime = { rev = {}, dungeonRev = { n = {}, i = {}, s = {} } }
+    self.runtime = { rev = {}, dictionaryRecords = {}, dungeonRev = { n = {}, i = {}, s = {} } }
     self:EnsureDungeonReverseMaps(dungeon)
 end
 
@@ -408,7 +408,7 @@ function LV.Store:DungeonStringID(value)
     return self:DungeonDictionaryID("s", value)
 end
 
-function LV.Store:GuildRecord(guildKey)
+function LV.Store:GuildRecord(guildKey, dictionaryOnly)
     if not guildKey or guildKey == "" then
         return nil
     end
@@ -417,6 +417,10 @@ function LV.Store:GuildRecord(guildKey)
 
     local guilds = self.db.g
     local record = guilds[guildKey]
+    -- Dictionary lookups do not need to normalize rosters or rescan raid history.
+    if dictionaryOnly and record and self.runtime.dictionaryRecords[guildKey] == record then
+        return record
+    end
     if type(record) ~= "table" then
         record = {
             v = LV.Constants.DB_VERSION,
@@ -461,7 +465,8 @@ function LV.Store:GuildRecord(guildKey)
     local repairedAliases, removedAliases = self:RepairSyntheticPlayerAliases(record)
     self:NormalizeHistoricalRaidTimes(record)
 
-    self:EnsureReverseMaps(guildKey, record)
+    self:EnsureReverseMaps(guildKey, record, true)
+    self.runtime.dictionaryRecords[guildKey] = record
     if repairedAliases > 0 or removedAliases > 0 then
         LV:Print("Repaired " .. tostring(repairedAliases) .. " player reference(s) and removed "
             .. tostring(removedAliases) .. " synthetic player alias(es).")
@@ -750,16 +755,23 @@ function LV.Store:InitializeIfNeeded()
     end
 end
 
-function LV.Store:EnsureReverseMaps(guildKey, record)
-    self.runtime.rev[guildKey] = self.runtime.rev[guildKey] or { n = {}, i = {}, s = {} }
+function LV.Store:EnsureReverseMaps(guildKey, record, onlyIfChanged)
+    self.runtime.rev[guildKey] = self.runtime.rev[guildKey] or {
+        n = {}, i = {}, s = {}, sources = {}, counts = {},
+    }
     local rev = self.runtime.rev[guildKey]
 
     for _, kind in ipairs({ "n", "i", "s" }) do
-        wipe(rev[kind])
-        for index, value in ipairs(record.d[kind] or {}) do
-            if value and value ~= "" then
-                rev[kind][value] = index
+        local dictionary = record.d[kind]
+        if not onlyIfChanged or rev.sources[kind] ~= dictionary or rev.counts[kind] ~= #dictionary then
+            wipe(rev[kind])
+            for index, value in ipairs(dictionary) do
+                if value and value ~= "" then
+                    rev[kind][value] = index
+                end
             end
+            rev.sources[kind] = dictionary
+            rev.counts[kind] = #dictionary
         end
     end
 end
@@ -770,11 +782,12 @@ function LV.Store:DictionaryID(guildKey, kind, value)
         return nil
     end
 
-    local record = self:GuildRecord(guildKey)
+    local record = self:GuildRecord(guildKey, true)
     if not record then
         return nil
     end
 
+    self:EnsureReverseMaps(guildKey, record, true)
     local dict = record.d[kind]
     local rev = self.runtime.rev[guildKey] and self.runtime.rev[guildKey][kind]
     if not dict or not rev then
@@ -789,11 +802,12 @@ function LV.Store:DictionaryID(guildKey, kind, value)
     local id = #dict + 1
     dict[id] = value
     rev[value] = id
+    self.runtime.rev[guildKey].counts[kind] = id
     return id
 end
 
 function LV.Store:DictionaryValue(guildKey, kind, id)
-    local record = self:GuildRecord(guildKey)
+    local record = self:GuildRecord(guildKey, true)
     id = tonumber(id)
     if not record or not id then
         return ""

@@ -22,6 +22,9 @@ function LV.Guild:RankMaximum()
 end
 
 function LV.Guild:ParseAuthorityDirective(text)
+    if type(issecretvalue) == "function" and issecretvalue(text) then
+        return nil, "unavailable"
+    end
     text = tostring(text or ""):gsub("\r\n", "\n"):gsub("\r", "\n")
     local matches = {}
     local directiveLines = 0
@@ -90,7 +93,16 @@ function LV.Guild:GuildInformationText()
         return nil
     end
     local clubInfo = C_Club.GetClubInfo(clubID)
-    return clubInfo and tostring(clubInfo.description or "") or nil
+    if (type(issecretvalue) == "function" and issecretvalue(clubInfo))
+        or (type(issecrettable) == "function" and issecrettable(clubInfo))
+        or type(clubInfo) ~= "table" then
+        return nil
+    end
+    local description = clubInfo.description
+    if type(issecretvalue) == "function" and issecretvalue(description) then
+        return nil
+    end
+    return description
 end
 
 function LV.Guild:GuildAuthorityDirective()
@@ -120,8 +132,8 @@ function LV.Guild:ScanAuthorityDirective()
     self.authorityScanAt = LV.Util:Now()
     self.authorityScanGuildKey = actual.key
     local ok, text = pcall(self.GuildInformationText, self)
-    if not ok or text == nil then
-        -- An unavailable club cache is not a removed guild directive.
+    if not ok or (type(issecretvalue) == "function" and issecretvalue(text)) or text == nil then
+        -- An unavailable or restricted description is not a removed directive.
         return self:GuildAuthorityDirective()
     end
     local directive, status = self:ParseAuthorityDirective(text)

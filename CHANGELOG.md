@@ -1,5 +1,16 @@
 # Changelog
 
+## 12.1.15 - 2026-11-23
+
+1. The LootViewer window has a new look: calm dark colours, one teal accent, simple line icons, pill switches, and key numbers at the top of each page.
+2. The sidebar shows your guild under the LootViewer name, groups pages into Raids, Dungeons, and Addon, and shows whether a raid is being tracked.
+3. Raid History, Players, and Roster use one actions menu (click the dots or right-click a row) instead of rows of edit and delete buttons.
+4. The Roster page lists players by role with a side panel for editing team, type, and roles. Import, export, and send are in one Transfer menu.
+5. Loot History can show any mix of difficulties, and its distribution bars are easier to read with a count for each difficulty.
+6. Attendance shows how many raids each player attended and highlights anyone under 90%.
+7. Fixed "script ran too long" errors and reduced CPU use when opening Raid History or Loot History with large saved histories.
+8. Fixed a Lua error when guild information is hidden, and restricted whispers are now safely ignored while standby whispers still work.
+
 ## 12.1.13 - 2026-10-07
 
 1. Guild roster updates no longer keep restarting automatic sync while you are idle.
